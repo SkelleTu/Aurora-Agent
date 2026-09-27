@@ -1,10 +1,27 @@
 import http from 'node:http';
+import { existsSync, createReadStream, statSync } from 'node:fs';
+import { extname, join, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 
-const port = Number(process.env.AURORA_PORT || 8787);
+const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
+const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
 const provider = createAIProvider();
 const aurora = createAuroraCore({ provider });
+
+const contentTypes = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+};
 
 function json(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -18,9 +35,25 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
+function serveWeb(req, res) {
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const safePath = normalize(join(webRoot, relative));
+  const candidate = safePath.startsWith(webRoot) ? safePath : join(webRoot, 'index.html');
+  const file = existsSync(candidate) && statSync(candidate).isFile() ? candidate : join(webRoot, 'index.html');
+
+  if (!existsSync(file)) return json(res, 503, { error: 'web_build_missing' });
+
+  res.writeHead(200, {
+    'content-type': contentTypes[extname(file)] || 'application/octet-stream',
+    'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
+  });
+  createReadStream(file).pipe(res);
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
 
   if (req.method === 'OPTIONS') {
@@ -33,9 +66,10 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         ok: true,
         agent: 'aurora',
-        version: '0.2.0',
+        version: '0.3.0',
         provider: provider.name,
         model: provider.model,
+        web: existsSync(join(webRoot, 'index.html')),
       });
     }
 
@@ -68,6 +102,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === 'GET') return serveWeb(req, res);
     return json(res, 404, { error: 'not_found' });
   } catch (error) {
     console.error('[Aurora]', error);
@@ -79,5 +114,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Aurora backend listening on http://localhost:${port}`);
+  console.log(`Aurora backend listening on port ${port}`);
 });

@@ -9,6 +9,11 @@ const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
 const provider = createAIProvider();
 const aurora = createAuroraCore({ provider });
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL ?? 'gpt-transcribe';
+const TTS_MODEL = process.env.OPENAI_TTS_MODEL ?? 'gpt-4o-mini-tts';
+const TTS_VOICE = process.env.OPENAI_TTS_VOICE ?? 'alloy';
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -28,11 +33,39 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(req) {
+async function readBuffer(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req) {
+  const buffer = await readBuffer(req);
+  if (!buffer.length) return {};
+  return JSON.parse(buffer.toString('utf8'));
+}
+
+async function transcribe(req) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for voice transcription.');
+  const body = await readBuffer(req);
+  const upstream = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${OPENAI_API_KEY}`, 'content-type': req.headers['content-type'] ?? '' },
+    body,
+  });
+  if (!upstream.ok) throw new Error(`OpenAI transcription failed (${upstream.status}): ${await upstream.text()}`);
+  return upstream.json();
+}
+
+async function synthesize(text) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for voice synthesis.');
+  const upstream = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${OPENAI_API_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: TTS_MODEL, voice: TTS_VOICE, input: text, response_format: 'mp3' }),
+  });
+  if (!upstream.ok) throw new Error(`OpenAI speech failed (${upstream.status}): ${await upstream.text()}`);
+  return Buffer.from(await upstream.arrayBuffer());
 }
 
 function serveWeb(req, res) {
@@ -66,9 +99,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         ok: true,
         agent: 'aurora',
-        version: '0.3.0',
+        version: '0.4.0',
         provider: provider.name,
         model: provider.model,
+        configured: provider.configured ?? true,
+        voice: Boolean(OPENAI_API_KEY),
         web: existsSync(join(webRoot, 'index.html')),
       });
     }
@@ -79,37 +114,32 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && req.url === '/api/chat') {
       const body = await readJson(req);
-      const result = await aurora.handleMessage({
-        sessionId: body.sessionId,
-        message: body.message,
-        signal: req.signal,
-      });
-
+      const result = await aurora.handleMessage({ sessionId: body.sessionId, message: body.message, signal: req.signal });
       return json(res, 200, {
         ...result,
         events: [
-          {
-            type: 'agent.message',
-            timestamp: new Date().toISOString(),
-            payload: { text: result.message },
-          },
-          ...result.actions.map((action) => ({
-            type: 'agent.action',
-            timestamp: new Date().toISOString(),
-            payload: action,
-          })),
+          { type: 'agent.message', timestamp: new Date().toISOString(), payload: { text: result.message } },
+          ...result.actions.map((action) => ({ type: 'agent.action', timestamp: new Date().toISOString(), payload: action })),
         ],
       });
+    }
+
+    if (req.method === 'POST' && req.url === '/api/transcribe') {
+      return json(res, 200, await transcribe(req));
+    }
+
+    if (req.method === 'POST' && req.url === '/api/tts') {
+      const body = await readJson(req);
+      const audio = await synthesize(String(body.text ?? '').trim());
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' });
+      return res.end(audio);
     }
 
     if (req.method === 'GET') return serveWeb(req, res);
     return json(res, 404, { error: 'not_found' });
   } catch (error) {
     console.error('[Aurora]', error);
-    return json(res, 500, {
-      error: 'aurora_request_failed',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
+    return json(res, 500, { error: 'aurora_request_failed', message: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
 

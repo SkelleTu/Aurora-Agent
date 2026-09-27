@@ -12,6 +12,7 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@huggingface/inference": "^4.13.0",
     "playcanvas": "^2.22.4"
   },
   "devDependencies": {

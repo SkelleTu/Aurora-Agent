@@ -2,6 +2,7 @@ import http from 'node:http';
 import { existsSync, createReadStream, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { InferenceClient } from '@huggingface/inference';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 
@@ -9,11 +10,11 @@ const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
 const provider = createAIProvider();
 const aurora = createAuroraCore({ provider });
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL ?? 'gpt-transcribe';
-const TTS_MODEL = process.env.OPENAI_TTS_MODEL ?? 'gpt-4o-mini-tts';
-const TTS_VOICE = process.env.OPENAI_TTS_VOICE ?? 'alloy';
+const HF_TOKEN = process.env.HF_TOKEN;
+const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
+const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
+const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;
+const hf = HF_TOKEN ? new InferenceClient(HF_TOKEN) : null;
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -23,27 +24,20 @@ const contentTypes = {
 function json(res, status, body) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); }
 async function readBuffer(req) { const chunks = []; for await (const chunk of req) chunks.push(chunk); return Buffer.concat(chunks); }
 async function readJson(req) { const buffer = await readBuffer(req); if (!buffer.length) return {}; return JSON.parse(buffer.toString('utf8')); }
+function requireHF() { if (!hf) throw new Error('HF_TOKEN is required for Hugging Face voice features.'); }
 
 async function transcribe(req) {
-  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for voice transcription.');
-  const body = await readBuffer(req);
-  const upstream = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${OPENAI_API_KEY}`, 'content-type': req.headers['content-type'] ?? '' },
-    body,
-  });
-  if (!upstream.ok) throw new Error(`OpenAI transcription failed (${upstream.status}): ${await upstream.text()}`);
-  return upstream.json();
+  requireHF();
+  const data = await readBuffer(req);
+  const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data });
+  return { text: result.text ?? '' };
 }
 
 async function synthesize(text) {
-  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for voice synthesis.');
-  const upstream = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
-    method: 'POST', headers: { authorization: `Bearer ${OPENAI_API_KEY}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: TTS_MODEL, voice: TTS_VOICE, input: text, response_format: 'mp3' }),
-  });
-  if (!upstream.ok) throw new Error(`OpenAI speech failed (${upstream.status}): ${await upstream.text()}`);
-  return Buffer.from(await upstream.arrayBuffer());
+  requireHF();
+  const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER } : undefined;
+  const audio = await hf.textToSpeech({ model: HF_TTS_MODEL, inputs: text }, options);
+  return { buffer: Buffer.from(await audio.arrayBuffer()), contentType: audio.type || 'audio/wav' };
 }
 
 function serveWeb(req, res) {
@@ -64,9 +58,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     if (req.method === 'GET' && req.url === '/health') return json(res, 200, {
-      ok: true, agent: 'aurora', version: '0.5.0', provider: provider.name, model: provider.model,
-      configured: provider.configured ?? true, voice: Boolean(OPENAI_API_KEY), web: existsSync(join(webRoot, 'index.html')),
-      architecture: { reasoning: 'huggingface', voice: 'openai', tools: 'aurora-system' },
+      ok: true, agent: 'aurora', version: '0.6.0', provider: provider.name, model: provider.model,
+      configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
+      architecture: { reasoning: 'huggingface', voice: 'huggingface', tools: 'aurora-system' },
+      voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL },
     });
     if (req.method === 'POST' && req.url === '/api/session') return json(res, 200, { sessionId: crypto.randomUUID(), status: 'ready' });
     if (req.method === 'POST' && req.url === '/api/chat') {
@@ -80,7 +75,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/transcribe') return json(res, 200, await transcribe(req));
     if (req.method === 'POST' && req.url === '/api/tts') {
       const body = await readJson(req); const audio = await synthesize(String(body.text ?? '').trim());
-      res.writeHead(200, { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' }); return res.end(audio);
+      res.writeHead(200, { 'content-type': audio.contentType, 'cache-control': 'no-store' }); return res.end(audio.buffer);
     }
     if (req.method === 'GET') return serveWeb(req, res);
     return json(res, 404, { error: 'not_found' });

@@ -11,9 +11,7 @@
     "start": "node backend/server.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
-  "dependencies": {
-    "@playcanvas/engine": "^2.6.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "concurrently": "^9.2.1",
     "typescript": "^5.9.2",

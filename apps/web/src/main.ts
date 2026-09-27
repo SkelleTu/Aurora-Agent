@@ -1,4 +1,4 @@
-import { Application, Color, FILLMODE_FILL_WINDOW, RESOLUTION_AUTO, GraphicsDevice } from '@playcanvas/engine';
+import { Application, Color, FILLMODE_FILL_WINDOW, RESOLUTION_AUTO, GraphicsDevice } from 'playcanvas';
 import type { AgentEvent } from '../../../packages/protocol/src/agent-events';
 import './style.css';
 

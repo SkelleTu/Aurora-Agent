@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: aurora-agent
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: node backend/server.mjs
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: AI_PROVIDER
+        value: huggingface
+      - key: HF_BASE_URL
+        value: https://router.huggingface.co/v1
+      - key: HF_MODEL
+        value: openai/gpt-oss-120b:fastest
+      - key: HF_TOKEN
+        sync: false

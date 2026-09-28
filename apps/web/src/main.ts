@@ -308,6 +308,7 @@ const liveState = {
   audioContext: null as AudioContext | null,
   source: null as MediaStreamAudioSourceNode | null,
   worklet: null as AudioWorkletNode | null,
+  legacyProcessor: null as ScriptProcessorNode | null,
   playback: [] as { id:string; audio:HTMLAudioElement; durationMs:number }[],
   currentPlayback: null as { id:string; audio:HTMLAudioElement; durationMs:number } | null,
   playbackTimer: 0 as number | undefined,
@@ -444,6 +445,9 @@ function handleLiveEvent(event: any) {
       break;
     case 'input_audio_buffer.speech_stopped':
       liveState.speaking = false;
+  liveState.noiseFloor = 0.008;
+  liveState.noiseSamples = 0;
+  liveState.silenceSince = 0;
       setLiveVoiceState('◌ Aurora processando…');
       break;
     case 'conversation.item.input_audio_transcription.delta': {
@@ -543,6 +547,7 @@ async function stopLiveVoice() {
   liveSend({ type:'session.close' });
   stopLivePlayback();
   try { liveState.worklet?.disconnect(); } catch {}
+  try { liveState.legacyProcessor?.disconnect(); } catch {}
   try { liveState.source?.disconnect(); } catch {}
   liveState.microphone?.getTracks().forEach(track => track.stop());
   try { await liveState.audioContext?.close(); } catch {}
@@ -552,6 +557,7 @@ async function stopLiveVoice() {
   liveState.audioContext = null;
   liveState.source = null;
   liveState.worklet = null;
+  liveState.legacyProcessor = null;
   liveState.speaking = false;
   setLiveVoiceState('Conversa ao vivo desligada');
   status.textContent = 'Aurora Live encerrada.';
@@ -567,9 +573,26 @@ async function startLiveVoice() {
   liveState.connecting = true;
   setLiveVoiceState('● Conectando Aurora Live…');
   try {
-    const microphone = await navigator.mediaDevices.getUserMedia({
-      audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 },
-    });
+    let microphone: MediaStream;
+    try {
+      microphone = await navigator.mediaDevices.getUserMedia({
+        audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true },
+      });
+    } catch (firstError) {
+      try {
+        microphone = await navigator.mediaDevices.getUserMedia({ audio:true });
+      } catch (secondError) {
+        const error = secondError instanceof DOMException ? secondError : firstError;
+        const code = error instanceof DOMException ? error.name : 'UnknownError';
+        const detail =
+          code === 'NotAllowedError' || code === 'SecurityError' ? 'Permissão do microfone bloqueada. Libere o microfone para este site e tente novamente.' :
+          code === 'NotFoundError' ? 'Nenhum microfone disponível foi encontrado.' :
+          code === 'NotReadableError' ? 'O microfone está ocupado por outro aplicativo ou o navegador não conseguiu acessá-lo.' :
+          code === 'OverconstrainedError' ? 'O navegador recusou as configurações de áudio do microfone.' :
+          `Não foi possível acessar o microfone (${code}).`;
+        throw new Error(detail);
+      }
+    }
     liveState.microphone = microphone;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(protocol + '//' + location.host + '/api/live');
@@ -591,15 +614,8 @@ async function startLiveVoice() {
     await ctx.resume();
     const source = ctx.createMediaStreamSource(microphone);
     liveState.source = source;
-    const workletUrl = URL.createObjectURL(new Blob([captureWorkletSource()], { type:'application/javascript' }));
-    await ctx.audioWorklet.addModule(workletUrl);
-    URL.revokeObjectURL(workletUrl);
-    const worklet = new AudioWorkletNode(ctx,'aurora-live-capture');
-    liveState.worklet = worklet;
-    source.connect(worklet);
-    worklet.port.onmessage = event => {
+    const processPcm = (pcmBuffer: ArrayBuffer, rms: number) => {
       if (!liveState.enabled || liveState.socket?.readyState !== WebSocket.OPEN) return;
-      const rms = Number(event.data?.rms || 0);
       if (liveState.noiseSamples < 25) {
         liveState.noiseFloor=(liveState.noiseFloor*liveState.noiseSamples+rms)/(liveState.noiseSamples+1);
         liveState.noiseSamples += 1;
@@ -619,8 +635,34 @@ async function startLiveVoice() {
           liveState.silenceSince=0;
         }
       }
-      liveState.socket.send(event.data.pcm);
+      liveState.socket.send(pcmBuffer);
     };
+    try {
+      if (!ctx.audioWorklet) throw new Error('AudioWorklet indisponível');
+      const workletUrl = URL.createObjectURL(new Blob([captureWorkletSource()], { type:'application/javascript' }));
+      await ctx.audioWorklet.addModule(workletUrl);
+      URL.revokeObjectURL(workletUrl);
+      const worklet = new AudioWorkletNode(ctx,'aurora-live-capture');
+      liveState.worklet = worklet;
+      source.connect(worklet);
+      worklet.port.onmessage = event => processPcm(event.data.pcm, Number(event.data?.rms || 0));
+    } catch {
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      liveState.legacyProcessor = processor as any;
+      source.connect(processor);
+      processor.connect(ctx.destination);
+      processor.onaudioprocess = event => {
+        const channel = event.inputBuffer.getChannelData(0);
+        const pcm = new Int16Array(channel.length);
+        let sum = 0;
+        for (let i=0;i<channel.length;i++) {
+          const v = channel[i];
+          sum += v*v;
+          pcm[i] = Math.max(-32768, Math.min(32767, Math.round(v*32767)));
+        }
+        processPcm(pcm.buffer, Math.sqrt(sum/channel.length));
+      };
+    }
     liveState.model = '';
     liveSend({ type:'session.configure', model:liveState.model || undefined, language:language.value });
     liveState.connecting=false;

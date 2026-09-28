@@ -20,7 +20,8 @@ const aurora = createAuroraCore({ provider, auraBridge });
 const HF_TOKEN = process.env.HF_TOKEN;
 const hf = HF_TOKEN ? new InferenceClient(HF_TOKEN) : null;
 const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
-const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
+const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'facebook/mms-tts-por';
+const HF_TTS_FALLBACK_MODEL = process.env.HF_TTS_FALLBACK_MODEL || 'facebook/mms-tts-por';
 const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;
 const LIVE_LANGUAGE = process.env.AURORA_LIVE_LANGUAGE || 'pt-BR';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
@@ -85,10 +86,18 @@ async function transcribe(req) {
 
 async function synthesize(text) {
   requireHF();
-  const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER } : undefined;
-  const audio = await hf.textToSpeech({ model: HF_TTS_MODEL, inputs: text }, options);
-  const buffer = Buffer.from(await audio.arrayBuffer());
-  return { buffer, contentType: audio.type || 'audio/wav', model: HF_TTS_MODEL, durationMs: wavDurationMs(buffer) };
+  const models = [...new Set([HF_TTS_MODEL, HF_TTS_FALLBACK_MODEL].filter(Boolean))];
+  let lastError = null;
+  for (const model of models) {
+    try {
+      const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER } : undefined;
+      const audio = await hf.textToSpeech({ model, inputs: text }, options);
+      const buffer = Buffer.from(await audio.arrayBuffer());
+      if (!buffer.length) throw new Error('TTS returned empty audio');
+      return { buffer, contentType: audio.type || 'audio/wav', model, durationMs: wavDurationMs(buffer) };
+    } catch (error) { lastError = error; }
+  }
+  throw new Error(`TTS unavailable: ${lastError?.message || 'no provider/model available'}`);
 }
 
 function serveWeb(req, res) {

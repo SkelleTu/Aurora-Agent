@@ -280,6 +280,28 @@ export class AuroraLiveSession {
     return { message: { role:'tool', tool_call_id:id, content:safeJson(result) } };
   }
 
+  async speakSegment(text, signal, turn) {
+    const sentence = String(text || '').trim();
+    if (!sentence || signal?.aborted || this.closed) return;
+    const segmentId = randomUUID();
+    this.responseSegments.set(segmentId, { text: sentence, startedAt: Date.now() });
+    this.emit('response.audio.segment.started', { responseId: this.responseId, segmentId, text: sentence, turn });
+    const audio = await this.synthesize(sentence, signal);
+    if (signal?.aborted || this.closed) return;
+    this.emit('response.audio.segment', {
+      responseId: this.responseId,
+      segmentId,
+      text: sentence,
+      contentType: audio.contentType,
+      durationMs: audio.durationMs || 0,
+      data: audio.buffer.toString('base64'),
+      model: audio.model,
+      engine: audio.engine,
+    });
+    this.emit('response.audio.segment.done', { responseId: this.responseId, segmentId, turn });
+    this.responseSegments.delete(segmentId);
+  }
+
   async speakResponse(text, signal, turn) {
     const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map(s => s.trim()).filter(Boolean) || [text];
     this.emit('response.text.completed', { responseId:this.responseId, text, turn });

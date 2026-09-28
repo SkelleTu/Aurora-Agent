@@ -3,7 +3,10 @@ const externalBaseUrl = String(process.env.RENDER_EXTERNAL_URL || process.env.AU
 const token = String(process.env.AURORA_CONTROL_TOKEN || '');
 
 async function request(path, options = {}, targetBaseUrl = baseUrl) {
-  const response = await fetch(`${targetBaseUrl}${path}`, { ...options, signal: AbortSignal.timeout(15000) });
+  const timeoutMs = Number(options.timeoutMs || 15000);
+  const fetchOptions = { ...options };
+  delete fetchOptions.timeoutMs;
+  const response = await fetch(`${targetBaseUrl}${path}`, { ...fetchOptions, signal: AbortSignal.timeout(timeoutMs) });
   let body = null;
   try { body = await response.json(); } catch {}
   return { ok: response.ok, status: response.status, body };
@@ -30,6 +33,15 @@ if (token) {
         body: JSON.stringify({ operation: 'diagnostics.test', args: { type: 'TELEMETRY', source: 'render-external-self-test' } }),
       }, externalBaseUrl),
     });
+    checks.push({
+      name: 'external-live-conversation',
+      result: await request('/api/control', {
+        method: 'POST',
+        headers: { ...headers, 'user-agent': 'aurora-render-live-self-test/1.0' },
+        body: JSON.stringify({ operation: 'smoke.live', args: { baseUrl: externalBaseUrl, timeoutMs: 90000 } }),
+        timeoutMs: 100000,
+      }, baseUrl),
+    });
   } else {
     checks.push({ name: 'external-url', result: { ok: false, status: 0, body: { error: 'RENDER_EXTERNAL_URL_not_available' } } });
   }
@@ -39,12 +51,12 @@ if (token) {
 
 const failed = checks.filter((check) => !check.result.ok);
 for (const check of checks) {
-  console.log(JSON.stringify({ selfTest: check.name, ok: check.result.ok, status: check.result.status, body: check.result.body?.ok === undefined ? check.result.body : { ok: check.result.body.ok, operation: check.result.body.operation, configured: check.result.body.configured, status: check.result.body.status } }));
+  console.log(JSON.stringify({ selfTest: check.name, ok: check.result.ok, status: check.result.status, body: check.result.body?.ok === undefined ? check.result.body : { ok: check.result.body.ok, operation: check.result.body.operation, configured: check.result.body.configured, status: check.result.body.status, result: check.result.body.result } }));
 }
 
 if (failed.length) {
   console.error(`Aurora Render self-test failed: ${failed.map((item) => item.name).join(', ')}`);
   process.exitCode = 1;
 } else {
-  console.log(JSON.stringify({ selfTest: 'complete', ok: true, checks: checks.length, externalControl: true }));
+  console.log(JSON.stringify({ selfTest: 'complete', ok: true, checks: checks.length, externalControl: true, externalLiveConversation: true }));
 }

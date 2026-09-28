@@ -12,11 +12,11 @@ const AURORA_TOOLS = [
     type: 'function',
     function: {
       name: 'aura_action',
-      description: 'Dispatch an authorized operation to Aura System. Use this for avatar, scene, memory, voice, animation, clothing, media, project, game, automation, settings, integration, or system operations.',
+      description: 'Dispatch an authorized operation to Aura System. Use this for avatar, scene, memory, voice, animation, clothing, media, project, game, automation, settings, integration, interface, or system operations.',
       parameters: {
         type: 'object',
         properties: {
-          domain: { type: 'string', enum: ['avatar', 'scene', 'memory', 'voice', 'animation', 'clothing', 'media', 'project', 'game', 'automation', 'settings', 'integration', 'system'] },
+          domain: { type: 'string', enum: ['avatar', 'scene', 'memory', 'voice', 'animation', 'clothing', 'media', 'project', 'game', 'automation', 'settings', 'integration', 'interface', 'system'] },
           action: { type: 'string' },
           args: { type: 'object', additionalProperties: true },
         },

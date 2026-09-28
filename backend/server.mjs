@@ -186,7 +186,7 @@ liveWss.on('connection', (socket) => {
     provider, realtimeAdapterFactory: liveAdapterFactory, auraBridge, sessionId,
     model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model,
     transcribe: async (pcm, signal) => { requireHF(); const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: pcm }, { signal }); return { text: result.text ?? '', model: HF_STT_MODEL }; },
-    synthesize: async (text, signal) => { requireHF(); const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER, signal } : { signal }; const audio = await hf.textToSpeech({ model: HF_TTS_MODEL, inputs: text }, options); const buffer = Buffer.from(await audio.arrayBuffer()); return { buffer, contentType: audio.type || 'audio/wav', durationMs: wavDurationMs(buffer), model: HF_TTS_MODEL }; },
+    synthesize: async (text, signal) => { requireHF(); const models = [...new Set([HF_TTS_MODEL, HF_TTS_FALLBACK_MODEL].filter(Boolean))]; let lastError = null; for (const model of models) { try { const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER, signal } : { signal }; const audio = await hf.textToSpeech({ model, inputs: text }, options); const buffer = Buffer.from(await audio.arrayBuffer()); if (!buffer.length) throw new Error('TTS returned empty audio'); return { buffer, contentType: audio.type || 'audio/wav', durationMs: wavDurationMs(buffer), model }; } catch (error) { lastError = error; } } throw new Error(`TTS unavailable: ${lastError?.message || 'no provider/model available'}`); },
     send: (event) => { recordLiveTelemetry(event.type, sessionId, event); if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });
   socket.on('message', (raw, isBinary) => {

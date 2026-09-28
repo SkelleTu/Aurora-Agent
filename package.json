@@ -10,7 +10,8 @@
     "build": "vite build",
     "start": "node backend/server.mjs",
     "preview": "vite preview --host 0.0.0.0",
-    "test:live": "node scripts/aurora-live-smoke.mjs"
+    "test:live": "node scripts/aurora-live-smoke.mjs",
+    "control:smoke": "node scripts/aurora-control.mjs smoke.live"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.0",

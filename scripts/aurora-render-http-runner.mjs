@@ -5,7 +5,7 @@ const timeoutMs = Math.max(1000, Math.min(120000, Number(process.env.AURORA_REMO
 
 if (!token) throw new Error('AURORA_CONTROL_TOKEN is required');
 
-const allowed = new Set(['health', 'live.diagnostics', 'aura.health', 'aura.diagnostics', 'diagnostics.test']);
+const allowed = new Set(['health', 'live.diagnostics', 'aura.health', 'aura.diagnostics', 'diagnostics.test', 'supreme.smoke']);
 if (!allowed.has(operation)) throw new Error(`operation_not_allowed:${operation}`);
 
 const controller = new AbortController();
@@ -17,7 +17,7 @@ try {
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${token}`,
-      'user-agent': 'aurora-render-http-runner/1.0',
+      'user-agent': 'aurora-render-http-runner/1.1',
     },
     body: JSON.stringify({ operation, args: { type: 'TELEMETRY', source: 'render-http-runner' } }),
     signal: controller.signal,

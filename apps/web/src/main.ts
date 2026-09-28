@@ -96,6 +96,8 @@ document.querySelector('[data-panel="voice"]')?.appendChild(voiceLiveState);
 let liveRecognition: any = null;
 let liveVoiceEnabled = false;
 let liveVoiceProcessing = false;
+let liveTurnId = 0;
+let liveMicStream: MediaStream | null = null;
 let currentAudio: HTMLAudioElement | null = null;
 const language = document.querySelector<HTMLSelectElement>('#language')!;
 const runtimeDomains = ['avatar', 'scene', 'animation', 'voice', 'interface'] as const;
@@ -153,14 +155,19 @@ async function loadCapabilities() {
   }
 }
 
+function stopCurrentAudio(interrupted = false) {
+  const audio = currentAudio;
+  if (!audio) return;
+  if (interrupted) (audio as any).__auroraInterrupted = true;
+  audio.pause();
+  audio.currentTime = 0;
+  if (currentAudio === audio) currentAudio = null;
+}
+
 async function speak(text: string, force = false) {
   if ((!force && !autoSpeak.checked) || !text.trim()) return;
   try {
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-      currentAudio = null;
-    }
+    stopCurrentAudio();
     const t = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -177,6 +184,9 @@ async function speak(text: string, force = false) {
       if (audio.ended) return resolve();
       audio.addEventListener('ended', () => resolve(), { once: true });
       audio.addEventListener('error', () => resolve(), { once: true });
+      audio.addEventListener('pause', () => {
+        if ((audio as any).__auroraInterrupted) resolve();
+      }, { once: true });
     });
     URL.revokeObjectURL(audio.src);
   } catch {}
@@ -295,24 +305,65 @@ function setLiveVoiceState(label: string) {
 function stopLiveVoice() {
   liveVoiceEnabled = false;
   liveVoiceProcessing = false;
+  liveTurnId += 1;
   if (liveRecognition) {
     liveRecognition.onend = null;
-    liveRecognition.stop();
+    try { liveRecognition.abort(); } catch {}
     liveRecognition = null;
   }
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio = null;
+  if (liveMicStream) {
+    liveMicStream.getTracks().forEach((track) => track.stop());
+    liveMicStream = null;
   }
+  stopCurrentAudio(true);
   setLiveVoiceState('Conversa ao vivo desligada');
 }
 
-function startLiveVoice() {
+function interruptLiveResponse() {
+  if (!liveVoiceProcessing || !currentAudio) return;
+  liveTurnId += 1;
+  liveVoiceProcessing = false;
+  stopCurrentAudio(true);
+  setLiveVoiceState('● Você interrompeu a Aurora — ouvindo…');
+  status.textContent = 'Aurora parou para ouvir você.';
+}
+
+async function handleLiveTurn(text: string) {
+  const turnId = ++liveTurnId;
+  liveVoiceProcessing = true;
+  setLiveVoiceState('◌ Aurora processando…');
+  try {
+    await sendMessage(text);
+  } catch (error) {
+    addMessage('assistant', error instanceof Error ? error.message : 'Erro de comunicação.');
+  } finally {
+    if (turnId !== liveTurnId || !liveVoiceEnabled) return;
+    liveVoiceProcessing = false;
+    setLiveVoiceState('● Ouvindo em tempo real…');
+  }
+}
+
+async function startLiveVoice() {
   if (!SpeechRecognition) return;
   if (liveVoiceEnabled) return;
   liveVoiceEnabled = true;
   liveVoiceProcessing = false;
+
+  if (navigator.mediaDevices?.getUserMedia) {
+    try {
+      liveMicStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+    } catch {
+      stopLiveVoice();
+      setLiveVoiceState('Permissão de microfone necessária');
+      return;
+    }
+  }
 
   const recognition = new SpeechRecognition();
   liveRecognition = recognition;
@@ -321,9 +372,18 @@ function startLiveVoice() {
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
 
-  recognition.onstart = () => setLiveVoiceState('● Ouvindo em tempo real…');
+  const startRecognition = () => {
+    if (!liveVoiceEnabled || liveRecognition !== recognition) return;
+    try {
+      const track = liveMicStream?.getAudioTracks()[0];
+      if (track) recognition.start(track);
+      else recognition.start();
+    } catch {}
+  };
 
-  recognition.onresult = async (event: any) => {
+  recognition.onstart = () => setLiveVoiceState(liveVoiceProcessing ? '◌ Aurora falando — pode interromper' : '● Ouvindo em tempo real…');
+
+  recognition.onresult = (event: any) => {
     let finalText = '';
     let interimText = '';
     for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -332,27 +392,23 @@ function startLiveVoice() {
       else interimText += transcript + ' ';
     }
 
+    const spokenText = (finalText || interimText).trim();
+
+    // Barge-in: enquanto a Aurora estiver falando, uma nova fala detectada
+    // interrompe o áudio atual e vira o próximo turno da conversa.
+    if (liveVoiceProcessing && currentAudio && spokenText.length >= 2) {
+      interruptLiveResponse();
+      try { recognition.abort(); } catch {}
+      void handleLiveTurn(spokenText);
+      return;
+    }
+
     if (interimText && !liveVoiceProcessing) {
       status.textContent = 'Ouvindo: ' + interimText.trim();
     }
 
     if (!finalText.trim() || liveVoiceProcessing) return;
-
-    liveVoiceProcessing = true;
-    recognition.stop();
-    setLiveVoiceState('◌ Aurora processando…');
-
-    try {
-      await sendMessage(finalText.trim());
-    } catch (error) {
-      addMessage('assistant', error instanceof Error ? error.message : 'Erro de comunicação.');
-    } finally {
-      liveVoiceProcessing = false;
-      if (liveVoiceEnabled) {
-        setLiveVoiceState('● Ouvindo em tempo real…');
-        try { recognition.start(); } catch {}
-      }
-    }
+    void handleLiveTurn(finalText.trim());
   };
 
   recognition.onerror = (event: any) => {
@@ -362,28 +418,23 @@ function startLiveVoice() {
       setLiveVoiceState('Permissão de microfone necessária');
       return;
     }
-    setLiveVoiceState('● Reconectando escuta…');
+    setLiveVoiceState(liveVoiceProcessing ? '◌ Aurora falando — ouvindo interrupções…' : '● Reconectando escuta…');
   };
 
   recognition.onend = () => {
-    if (!liveVoiceEnabled || liveVoiceProcessing) return;
-    setLiveVoiceState('● Reconectando escuta…');
-    try { recognition.start(); } catch {}
+    if (!liveVoiceEnabled) return;
+    setLiveVoiceState(liveVoiceProcessing ? '◌ Aurora falando — ouvindo interrupções…' : '● Reconectando escuta…');
+    window.setTimeout(startRecognition, 50);
   };
 
-  try {
-    recognition.start();
-    setLiveVoiceState('● Conectando microfone…');
-  } catch {
-    stopLiveVoice();
-    setLiveVoiceState('Não foi possível iniciar o microfone');
-  }
+  startRecognition();
+  setLiveVoiceState('● Conectando microfone…');
 }
 
 if (SpeechRecognition) {
   mic.addEventListener('click', () => {
     if (liveVoiceEnabled) stopLiveVoice();
-    else startLiveVoice();
+    else void startLiveVoice();
   });
 } else {
   mic.disabled = true;

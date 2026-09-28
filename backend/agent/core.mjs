@@ -33,7 +33,7 @@ const AURORA_TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          task: { type: 'string', enum: Object.keys(listAuroraCapabilities()) },
+          task: { type: 'string', enum: listAuroraCapabilities().map(({ task }) => task) },
           args: { type: 'object', additionalProperties: true },
           model: { type: 'string' },
         },
@@ -116,15 +116,7 @@ export function createAuroraCore({ provider, auraBridge = null }) {
       }
     }
 
-    return {
-      sessionId,
-      provider: provider.name,
-      model: provider.model,
-      message: finalMessage,
-      actions,
-      finishReason,
-      tools: toolResults.length,
-    };
+    return { sessionId, provider: provider.name, model: provider.model, message: finalMessage, actions, finishReason, tools: toolResults.length };
   }
 
   return { handleMessage };

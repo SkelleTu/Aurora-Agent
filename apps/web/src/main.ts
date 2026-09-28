@@ -309,6 +309,11 @@ const liveState = {
   playback: [] as { id:string; audio:HTMLAudioElement; durationMs:number }[],
   currentPlayback: null as { id:string; audio:HTMLAudioElement; durationMs:number } | null,
   playbackTimer: 0 as number | undefined,
+  pcmSources: new Set<AudioBufferSourceNode>(),
+  pcmTimer: 0 as number | undefined,
+  pcmResponseId: '',
+  pcmStartAt: 0,
+  pcmNextAt: 0,
   speaking: false,
   silenceSince: 0,
   noiseFloor: 0.008,
@@ -327,7 +332,14 @@ function liveSend(event: Record<string, unknown>) {
 
 function stopLivePlayback() {
   if (liveState.playbackTimer) window.clearInterval(liveState.playbackTimer);
+  if (liveState.pcmTimer) window.clearInterval(liveState.pcmTimer);
   liveState.playbackTimer = undefined;
+  liveState.pcmTimer = undefined;
+  for (const source of liveState.pcmSources) { try { source.stop(); } catch {} }
+  liveState.pcmSources.clear();
+  liveState.pcmResponseId = '';
+  liveState.pcmStartAt = 0;
+  liveState.pcmNextAt = 0;
   if (liveState.currentPlayback) {
     const item = liveState.currentPlayback;
     item.audio.pause();
@@ -367,6 +379,41 @@ function playNextLiveAudio() {
   }, 100);
 }
 
+function scheduleLivePcm(event: any) {
+  const ctx = liveState.audioContext;
+  if (!ctx) return;
+  const responseId = String(event.responseId || '');
+  if (responseId && liveState.pcmResponseId !== responseId) {
+    stopLivePlayback();
+    liveState.pcmResponseId = responseId;
+  }
+  const bytes = Uint8Array.from(atob(String(event.data || '')), ch => ch.charCodeAt(0));
+  if (bytes.byteLength < 2) return;
+  const sampleRate = Number(event.sampleRate || 24000);
+  const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+  const audioBuffer = ctx.createBuffer(Number(event.channels || 1), pcm.length, sampleRate);
+  const channel = audioBuffer.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
+  const source = ctx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(ctx.destination);
+  const now = ctx.currentTime;
+  const startAt = Math.max(now + 0.015, liveState.pcmNextAt || 0);
+  if (!liveState.pcmStartAt) liveState.pcmStartAt = startAt;
+  liveState.pcmNextAt = startAt + audioBuffer.duration;
+  liveState.pcmSources.add(source);
+  source.onended = () => liveState.pcmSources.delete(source);
+  source.start(startAt);
+  setLiveVoiceState('◌ Aurora falando…');
+  if (!liveState.pcmTimer) {
+    liveState.pcmTimer = window.setInterval(() => {
+      if (!liveState.pcmResponseId || !liveState.audioContext) return;
+      const heardMs = Math.max(0, Math.min((liveState.pcmNextAt - liveState.pcmStartAt) * 1000, (liveState.audioContext.currentTime - liveState.pcmStartAt) * 1000));
+      liveSend({ type:'playback.progress', ms:Math.round(heardMs) });
+    }, 80);
+  }
+}
+
 function interruptLiveOutput() {
   const currentMs = liveState.currentPlayback ? Math.round(liveState.currentPlayback.audio.currentTime * 1000) : 0;
   liveSend({ type:'playback.progress', ms:currentMs });
@@ -403,6 +450,9 @@ function handleLiveEvent(event: any) {
     case 'response.text.completed':
       if (String(event.text || '').trim()) addMessage('assistant', String(event.text).trim());
       break;
+    case 'response.audio.delta':
+      scheduleLivePcm(event);
+      break;
     case 'response.audio.segment':
       try {
         const bytes = Uint8Array.from(atob(String(event.data || '')), ch => ch.charCodeAt(0));
@@ -414,7 +464,10 @@ function handleLiveEvent(event: any) {
         playNextLiveAudio();
       } catch {}
       break;
+    case 'response.audio.done':
+      break;
     case 'response.audio.cleared':
+    case 'response.audio.interrupted':
     case 'response.cancelled':
     case 'conversation.item.truncated':
       stopLivePlayback();

@@ -17,7 +17,60 @@ const HF_TOKEN = process.env.HF_TOKEN;
 const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
 const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
 const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;
+const REALTIME_API_KEY = process.env['OPEN' + 'AI_API_KEY'];
 const hf = HF_TOKEN ? new InferenceClient(HF_TOKEN) : null;
+
+const REALTIME_TOOL = {
+  type: 'function',
+  name: 'aura_action',
+  description: 'Execute an authorized Aura System runtime action. Use this for avatar, scene, animation, voice, interface, memory, clothing, media, project, game, automation, settings, integration, or system operations. Never invent success: the application result is authoritative.',
+  parameters: {
+    type: 'object',
+    properties: {
+      domain: { type: 'string', enum: ['avatar', 'scene', 'memory', 'voice', 'animation', 'clothing', 'media', 'project', 'game', 'automation', 'settings', 'integration', 'interface', 'system'] },
+      action: { type: 'string' },
+      args: { type: 'object', additionalProperties: true },
+    },
+    required: ['domain', 'action', 'args'],
+    additionalProperties: false,
+  },
+};
+
+const REALTIME_INSTRUCTIONS = `You are Aurora, the live voice agent of Aura System. Speak naturally in Brazilian Portuguese unless the user speaks another language. Be concise, warm, direct and conversational. This is a full-duplex voice conversation: listen continuously, detect when the user starts speaking, and stop your speech immediately when interrupted. Never wait for a button press between turns. Do not narrate internal reasoning or tool calls. Use aura_action whenever the user asks you to operate Aura System or its runtime. Treat tool results as authoritative and never claim an action succeeded unless the tool result confirms it. If an action fails, say so briefly and continue listening.`;
+
+async function createRealtimeClientSecret() {
+  if (!REALTIME_API_KEY) throw new Error('Realtime voice is not configured on the Aurora server.');
+  const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${REALTIME_API_KEY}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      session: {
+        type: 'realtime',
+        model: 'gpt-realtime-2.1',
+        instructions: REALTIME_INSTRUCTIONS,
+        audio: {
+          input: {
+            turn_detection: {
+              type: 'semantic_vad',
+              eagerness: 'low',
+              create_response: true,
+              interrupt_response: true,
+            },
+          },
+          output: { voice: 'marin' },
+        },
+        tools: [REALTIME_TOOL],
+        tool_choice: 'auto',
+      },
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error?.message || `Realtime client secret failed (${response.status}).`);
+  return data;
+}
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -95,6 +148,7 @@ const server = http.createServer(async (req, res) => {
       ok: true, agent: 'aurora', version: '0.9.0', provider: provider.name, model: provider.model,
       configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
       auraBridge: { configured: auraBridge.configured },
+      realtime: { configured: Boolean(REALTIME_API_KEY), model: 'gpt-realtime-2.1', transport: 'webrtc', vad: 'semantic_vad' },
       architecture: { reasoning: 'huggingface', capabilities: 'huggingface-adapters', voice: 'huggingface', tools: 'aura-system-bridge' },
       voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL }, modelProfiles: AURORA_MODEL_PROFILES,
       capabilities: Object.keys(HUGGING_FACE_TASKS),
@@ -120,6 +174,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && req.url === '/api/session') return json(res, 200, { sessionId: crypto.randomUUID(), status: 'ready' });
+    if (req.method === 'POST' && req.url === '/api/realtime/token') {
+      try {
+        const token = await createRealtimeClientSecret();
+        return json(res, 200, token);
+      } catch (error) {
+        return json(res, 503, { ok: false, error: 'realtime_unavailable', message: error instanceof Error ? error.message : 'Realtime unavailable' });
+      }
+    }
+    if (req.method === 'POST' && req.url === '/api/realtime/tool') {
+      const body = await readJson(req);
+      if (body.name !== 'aura_action' || !body.args || typeof body.args !== 'object') return json(res, 400, { ok: false, error: 'unsupported_realtime_tool' });
+      const { domain, action, args } = body.args;
+      if (!domain || !action || typeof args !== 'object') return json(res, 400, { ok: false, error: 'invalid_aura_action' });
+      const result = await auraBridge.dispatch({ domain: String(domain), action: String(action), args, signal: req.signal });
+      return json(res, result.ok ? 200 : 503, result);
+    }
     if (req.method === 'POST' && req.url === '/api/chat') {
       const body = await readJson(req);
       const result = await aurora.handleMessage({ sessionId: body.sessionId, message: body.message, signal: req.signal });

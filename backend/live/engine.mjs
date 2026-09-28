@@ -3,24 +3,6 @@ import { ResponseCreateSequencer } from './response-sequencer.mjs';
 import { PlaybackTracker } from './playback-tracker.mjs';
 import { LIVE_SYSTEM_PROMPT, LIVE_AURA_TOOL } from './tools.mjs';
 
-const LIVE_AURA_TOOL_UNUSED = {
-  type: 'function',
-  function: {
-    name: 'aura_action',
-    description: 'Execute an authorized Aura System operation.',
-    parameters: {
-      type: 'object',
-      properties: {
-        domain: { type: 'string', enum: ['avatar','scene','memory','voice','animation','clothing','media','project','game','automation','settings','integration','interface','system'] },
-        action: { type: 'string' },
-        args: { type: 'object', additionalProperties: true },
-      },
-      required: ['domain','action','args'],
-      additionalProperties: false,
-    },
-  },
-};
-
 function safeJson(value) {
   try { return JSON.stringify(value); } catch { return JSON.stringify({ ok:false, error:'serialization_failed' }); }
 }
@@ -59,14 +41,14 @@ export class AuroraLiveSession {
   wireRealtimeAdapter(adapter) {
     this.realtimeAdapter = adapter;
     adapter.on('connected', ({ model }) => this.emit('session.updated', { model: model || this.model, language: this.language, nativeAudio: true, transport: 'realtime-model' }));
-    adapter.on('input_transcript_delta', ({ text }) => { this.inputTranscript += String(text || ''); this.emit('conversation.item.input_audio_transcription.delta', { text: String(text || '') }); });
+    adapter.on('input_transcript_delta', ({ text, final = false, interim = false }) => { const value = String(text || ''); if (interim) this.emit('conversation.item.input_audio_transcription.delta', { text: value, interim: true }); else { this.inputTranscript += value; this.emit('conversation.item.input_audio_transcription.delta', { text: value }); if (final) { this.emit('conversation.item.input_audio_transcription.completed', { text: this.inputTranscript }); this.history.push({ role: 'user', content: this.inputTranscript }); this.inputTranscript = ''; } } });
     adapter.on('output_transcript_delta', ({ text }) => { this.outputTranscript += String(text || ''); this.emit('response.audio.transcript.delta', { responseId: this.responseId, delta: String(text || '') }); });
     adapter.on('output_text_delta', ({ text }) => this.emit('response.text.delta', { responseId: this.responseId, delta: String(text || '') }));
     adapter.on('audio_delta', ({ responseId, data, sampleRate = 24000, channels = 1, encoding = 'pcm_s16le' }) => {
-      this.responseId = responseId || this.responseId || randomUUID();
-      this.responseSequencer.begin(this.responseId);
-      this.playbackTracker.start(this.responseId);
-      this.emit('response.created', { responseId: this.responseId, model: this.model, nativeAudio: true });
+      const nextId = responseId || this.responseId || randomUUID();
+      const isNewResponse = this.responseId !== nextId;
+      this.responseId = nextId;
+      if (isNewResponse) { this.responseSequencer.begin(this.responseId); this.playbackTracker.start(this.responseId); this.emit('response.created', { responseId: this.responseId, model: this.model, nativeAudio: true }); }
       this.emit('response.audio.delta', { responseId: this.responseId, sampleRate, channels, encoding, data: Buffer.from(data).toString('base64') });
     });
     adapter.on('audio_done', ({ responseId }) => this.emit('response.audio.done', { responseId: responseId || this.responseId }));

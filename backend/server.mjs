@@ -6,6 +6,7 @@ import { InferenceClient } from '@huggingface/inference';
 import { WebSocketServer } from 'ws';
 import { AuroraLiveSession } from './live/engine.mjs';
 import { GeminiLiveAdapter } from './live/gemini-live.mjs';
+import { getLiveDiagnostics, recordLiveTelemetry, markLiveSessionInactive } from './live/telemetry.mjs';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
@@ -39,7 +40,7 @@ const contentTypes = {
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon',
 };
-function json(res, status, body) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); }
+function json(res, status, body) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); }
 async function readBuffer(req) { const chunks = []; for await (const chunk of req) chunks.push(chunk); return Buffer.concat(chunks); }
 async function readJson(req) { const buffer = await readBuffer(req); if (!buffer.length) return {}; return JSON.parse(buffer.toString('utf8')); }
 function requireHF() { if (!hf) throw new Error('HF_TOKEN is required for Hugging Face voice features.'); }
@@ -107,93 +108,85 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
-    if (req.method === 'GET' && req.url === '/health') return json(res, 200, {
+    const requestUrl = new URL(req.url, 'http://localhost');
+    if (req.method === 'GET' && requestUrl.pathname === '/health') return json(res, 200, {
       ok: true, agent: 'aurora', version: '0.9.0', provider: provider.name, model: provider.model,
       configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
       auraBridge: { configured: auraBridge.configured },
       live: { configured: LIVE_PROVIDER === 'gemini' ? Boolean(GOOGLE_API_KEY) : Boolean(HF_TOKEN), provider: LIVE_PROVIDER, transport: 'websocket', vad: LIVE_PROVIDER === 'gemini' ? 'provider_realtime' : 'client_energy', model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, nativeAudio: LIVE_PROVIDER === 'gemini', language: LIVE_LANGUAGE },
       architecture: { reasoning: 'huggingface', capabilities: 'huggingface-adapters', voice: 'huggingface', tools: 'aura-system-bridge' },
-      voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL }, modelProfiles: AURORA_MODEL_PROFILES,
-      capabilities: Object.keys(HUGGING_FACE_TASKS),
+      voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL }, modelProfiles: AURORA_MODEL_PROFILES, capabilities: Object.keys(HUGGING_FACE_TASKS),
     });
+    if (req.method === 'GET' && requestUrl.pathname === '/api/live/diagnostics') return json(res, 200, getLiveDiagnostics(requestUrl.searchParams.get('sessionId')));
+    if (req.method === 'GET' && requestUrl.pathname === '/api/aura/diagnostics') return json(res, 200, await auraBridge.diagnostics(requestUrl.searchParams.get('traceId'), req.signal));
+    if (req.method === 'GET' && requestUrl.pathname === '/api/capabilities') return json(res, 200, { groups: ['cognition', 'audio', 'vision', 'creation'], capabilities: listAuroraCapabilities() });
+    if (req.method === 'POST' && requestUrl.pathname === '/api/capability') return json(res, 200, await runCapability(await readJson(req), req.signal));
+    if (req.method === 'GET' && requestUrl.pathname === '/api/aura/status') return json(res, 200, { configured: auraBridge.configured, health: auraBridge.configured ? await auraBridge.health(req.signal) : null });
+    if (req.method === 'POST' && requestUrl.pathname === '/api/diagnostics/test') {
+      const body = await readJson(req);
+      const sessionId = String(body.sessionId || crypto.randomUUID());
+      const type = String(body.type || 'DIAGNOSTIC_TEST');
+      recordLiveTelemetry('TEST_START', sessionId, { type });
+      const result = type === 'AURA_HEALTH' ? await auraBridge.health(req.signal) : type === 'AURA_DIAGNOSTICS' ? await auraBridge.diagnostics(body.traceId, req.signal) : { ok: true, message: 'telemetry pipeline reachable' };
+      recordLiveTelemetry('TEST_END', sessionId, { type, ok: result?.ok !== false });
+      return json(res, result?.ok === false ? 503 : 200, { sessionId, type, result, diagnostics: getLiveDiagnostics(sessionId) });
+    }
 
-    if (req.method === 'GET' && req.url === '/api/capabilities') return json(res, 200, { groups: ['cognition', 'audio', 'vision', 'creation'], capabilities: listAuroraCapabilities() });
-    if (req.method === 'POST' && req.url === '/api/capability') return json(res, 200, await runCapability(await readJson(req), req.signal));
-    if (req.method === 'GET' && req.url === '/api/aura/status') return json(res, 200, { configured: auraBridge.configured, health: auraBridge.configured ? await auraBridge.health(req.signal) : null });
-
-    if (req.method === 'GET' && req.url === '/api/huggingface/models') {
+    if (req.method === 'GET' && requestUrl.pathname === '/api/huggingface/models') {
       if (!provider.listChatModels) return json(res, 501, { error: 'model_catalog_unavailable' });
       return json(res, 200, await provider.listChatModels());
     }
-    if (req.method === 'GET' && req.url.startsWith('/api/huggingface/hub-models')) {
+    if (req.method === 'GET' && requestUrl.pathname === '/api/huggingface/hub-models') {
       if (!provider.listHubModels) return json(res, 501, { error: 'hub_catalog_unavailable' });
-      const url = new URL(req.url, 'http://localhost');
-      return json(res, 200, await provider.listHubModels({ task: url.searchParams.get('task') || undefined, provider: url.searchParams.get('provider') || 'all', author: url.searchParams.get('author') || undefined, limit: Math.min(Number(url.searchParams.get('limit') || 100), 500) }));
+      return json(res, 200, await provider.listHubModels({ task: requestUrl.searchParams.get('task') || undefined, provider: requestUrl.searchParams.get('provider') || 'all', author: requestUrl.searchParams.get('author') || undefined, limit: Math.min(Number(requestUrl.searchParams.get('limit') || 100), 500) }));
     }
-    if (req.method === 'GET' && req.url.startsWith('/api/huggingface/access-models')) {
+    if (req.method === 'GET' && requestUrl.pathname === '/api/huggingface/access-models') {
       if (!provider.listAccessibleModels) return json(res, 501, { error: 'accessible_model_catalog_unavailable' });
-      const url = new URL(req.url, 'http://localhost');
-      return json(res, 200, await provider.listAccessibleModels({ task: url.searchParams.get('task') || undefined, provider: url.searchParams.get('provider') || 'all', limit: Math.min(Number(url.searchParams.get('limit') || 500), 500) }));
+      return json(res, 200, await provider.listAccessibleModels({ task: requestUrl.searchParams.get('task') || undefined, provider: requestUrl.searchParams.get('provider') || 'all', limit: Math.min(Number(requestUrl.searchParams.get('limit') || 500), 500) }));
     }
-
-    if (req.method === 'POST' && req.url === '/api/session') return json(res, 200, { sessionId: crypto.randomUUID(), status: 'ready' });
-    if (req.method === 'POST' && req.url === '/api/chat') {
-      const body = await readJson(req);
-      const result = await aurora.handleMessage({ sessionId: body.sessionId, message: body.message, signal: req.signal });
+    if (req.method === 'POST' && requestUrl.pathname === '/api/session') return json(res, 200, { sessionId: crypto.randomUUID(), status: 'ready' });
+    if (req.method === 'POST' && requestUrl.pathname === '/api/chat') {
+      const body = await readJson(req); const result = await aurora.handleMessage({ sessionId: body.sessionId, message: body.message, signal: req.signal });
       return json(res, 200, { ...result, events: [{ type: 'agent.message', timestamp: new Date().toISOString(), payload: { text: result.message } }, ...result.actions.map((action) => ({ type: 'agent.action', timestamp: new Date().toISOString(), payload: action }))] });
     }
-    if (req.method === 'POST' && req.url === '/api/action') {
-      const body = await readJson(req);
-      if (!body.domain || !body.action) return json(res, 400, { ok: false, error: 'domain_and_action_required' });
+    if (req.method === 'POST' && requestUrl.pathname === '/api/action') {
+      const body = await readJson(req); if (!body.domain || !body.action) return json(res, 400, { ok: false, error: 'domain_and_action_required' });
       const result = await auraBridge.dispatch({ domain: String(body.domain), action: String(body.action), args: body.args && typeof body.args === 'object' ? body.args : {}, signal: req.signal });
       return json(res, result.ok ? 200 : 503, result);
     }
-    if (req.method === 'POST' && req.url === '/api/transcribe') return json(res, 200, await transcribe(req));
-    if (req.method === 'POST' && req.url === '/api/tts') {
+    if (req.method === 'POST' && requestUrl.pathname === '/api/transcribe') return json(res, 200, await transcribe(req));
+    if (req.method === 'POST' && requestUrl.pathname === '/api/tts') {
       const body = await readJson(req); const audio = await synthesize(String(body.text ?? '').trim());
       res.writeHead(200, { 'content-type': audio.contentType, 'cache-control': 'no-store', 'x-aurora-model': audio.model }); return res.end(audio.buffer);
     }
     if (req.method === 'GET') return serveWeb(req, res);
     return json(res, 404, { error: 'not_found' });
   } catch (error) {
-    console.error('[Aurora]', error);
-    return json(res, 500, { error: 'aurora_request_failed', message: error instanceof Error ? error.message : 'Unknown error' });
+    console.error('[Aurora]', error); return json(res, 500, { error: 'aurora_request_failed', message: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
+
 const liveWss = new WebSocketServer({ server, path: '/api/live' });
 liveWss.on('connection', (socket) => {
+  const sessionId = crypto.randomUUID();
+  recordLiveTelemetry('LIVE_CONNECT', sessionId, { provider: LIVE_PROVIDER, model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model });
   const liveAdapterFactory = LIVE_PROVIDER === 'gemini'
-    ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge })
+    ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge, sessionId })
     : null;
   const live = new AuroraLiveSession({
-    provider,
-    realtimeAdapterFactory: liveAdapterFactory,
-    auraBridge,
-    sessionId: crypto.randomUUID(),
+    provider, realtimeAdapterFactory: liveAdapterFactory, auraBridge, sessionId,
     model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model,
-    transcribe: async (pcm, signal) => {
-      requireHF();
-      const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: pcm }, { signal });
-      return { text: result.text ?? '', model: HF_STT_MODEL };
-    },
-    synthesize: async (text, signal) => {
-      requireHF();
-      const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER, signal } : { signal };
-      const audio = await hf.textToSpeech({ model: HF_TTS_MODEL, inputs: text }, options);
-      const buffer = Buffer.from(await audio.arrayBuffer());
-      return { buffer, contentType: audio.type || 'audio/wav', durationMs: wavDurationMs(buffer), model: HF_TTS_MODEL };
-    },
-    send: (event) => { if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
+    transcribe: async (pcm, signal) => { requireHF(); const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: pcm }, { signal }); return { text: result.text ?? '', model: HF_STT_MODEL }; },
+    synthesize: async (text, signal) => { requireHF(); const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER, signal } : { signal }; const audio = await hf.textToSpeech({ model: HF_TTS_MODEL, inputs: text }, options); const buffer = Buffer.from(await audio.arrayBuffer()); return { buffer, contentType: audio.type || 'audio/wav', durationMs: wavDurationMs(buffer), model: HF_TTS_MODEL }; },
+    send: (event) => { recordLiveTelemetry(event.type, sessionId, event); if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });
-  // The browser explicitly configures the Live session after the WebSocket is ready.
-  // This avoids a server-side connection race and makes provider setup errors observable to the client.
   socket.on('message', (raw, isBinary) => {
     try {
-      if (isBinary) return live.audio(Buffer.from(raw));
-      const event = JSON.parse(String(raw));
+      if (isBinary) { recordLiveTelemetry('AUDIO_RECEIVED', sessionId, { bytes: raw.length }); return live.audio(Buffer.from(raw)); }
+      const event = JSON.parse(String(raw)); recordLiveTelemetry(event.type || 'CLIENT_EVENT', sessionId, { keys: Object.keys(event) });
       switch (event.type) {
-        case 'session.configure': void live.configure(event).catch((error) => { if (socket.readyState === 1) socket.send(JSON.stringify({ type:'error', error:error instanceof Error ? error.message : String(error) })); }); break;
-        case 'input_audio_buffer.append': live.audio(Buffer.from(String(event.data || ''), 'base64')); break;
+        case 'session.configure': void live.configure(event).catch((error) => { recordLiveTelemetry('SESSION_CONFIG_ERROR', sessionId, { error: error?.message || String(error) }); if (socket.readyState === 1) socket.send(JSON.stringify({ type:'error', error:error instanceof Error ? error.message : String(error) })); }); break;
+        case 'input_audio_buffer.append': recordLiveTelemetry('AUDIO_RECEIVED', sessionId, { bytes: Buffer.byteLength(String(event.data || ''), 'base64') }); live.audio(Buffer.from(String(event.data || ''), 'base64')); break;
         case 'input_audio_buffer.speech_started': live.speechStarted(); break;
         case 'input_audio_buffer.speech_stopped':
         case 'input_audio_buffer.commit': live.speechStopped(); break;
@@ -203,17 +196,15 @@ liveWss.on('connection', (socket) => {
         case 'session.close': live.close(); socket.close(); break;
       }
     } catch (error) {
+      recordLiveTelemetry('WS_HANDLER_ERROR', sessionId, { error: error?.message || String(error) });
       if (socket.readyState === 1) socket.send(JSON.stringify({ type:'error', error:error instanceof Error ? error.message : String(error) }));
     }
   });
-  socket.on('close', () => live.close());
+  socket.on('close', () => { markLiveSessionInactive(sessionId, 'socket_closed'); recordLiveTelemetry('LIVE_CLOSE', sessionId, { reason: 'socket_closed' }); live.close(); });
+  socket.on('error', (error) => recordLiveTelemetry('WS_ERROR', sessionId, { error: error?.message || String(error) }));
 });
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`Aurora backend listening on port ${port}`);
-  if (auraBridge.configured) {
-    void auraBridge.health()
-      .then((result) => console.log('Aura System bridge health:', JSON.stringify(result)))
-      .catch((error) => console.error('Aura System bridge health failed:', error));
-  }
+  if (auraBridge.configured) void auraBridge.health().then((result) => console.log('Aura System bridge health:', JSON.stringify(result))).catch((error) => console.error('Aura System bridge health failed:', error));
 });

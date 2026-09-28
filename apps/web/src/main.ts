@@ -34,7 +34,7 @@ root.innerHTML = `
         <div class="metrics"><div><span>CONEXÃO</span><strong id="connection">…</strong></div><div><span>MODELO</span><strong id="modelCompact">…</strong></div></div>
         <div class="chat" id="chat" aria-live="polite"><div class="empty-chat"><span>✦</span><strong>Conversa com Aurora</strong><small>Digite uma mensagem ou use o microfone para começar.</small></div></div>
         <form id="chatForm" class="composer"><input id="message" autocomplete="off" placeholder="Fale com a Aurora…"/><button class="send" aria-label="Enviar mensagem">↑</button></form>
-        <button id="mic" class="wide secondary" type="button">◉ &nbsp; Falar</button>
+        <button id="mic" class="wide secondary" type="button">◉ &nbsp; Iniciar conversa ao vivo</button>
       </section>
 
       <section class="tab-panel" data-panel="avatar">
@@ -89,6 +89,14 @@ const form = document.querySelector<HTMLFormElement>('#chatForm')!;
 const input = document.querySelector<HTMLInputElement>('#message')!;
 const mic = document.querySelector<HTMLButtonElement>('#mic')!;
 const autoSpeak = document.querySelector<HTMLInputElement>('#autoSpeak')!;
+const voiceLiveState = document.createElement('div');
+voiceLiveState.className = 'voice-live-state';
+voiceLiveState.textContent = 'Conversa ao vivo desligada';
+document.querySelector('[data-panel="voice"]')?.appendChild(voiceLiveState);
+let liveRecognition: any = null;
+let liveVoiceEnabled = false;
+let liveVoiceProcessing = false;
+let currentAudio: HTMLAudioElement | null = null;
 const language = document.querySelector<HTMLSelectElement>('#language')!;
 const runtimeDomains = ['avatar', 'scene', 'animation', 'voice', 'interface'] as const;
 const runtimeSeen = new Map<string, string>();
@@ -148,10 +156,29 @@ async function loadCapabilities() {
 async function speak(text: string, force = false) {
   if ((!force && !autoSpeak.checked) || !text.trim()) return;
   try {
-    const t = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+      currentAudio = null;
+    }
+    const t = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
     if (!t.ok) return;
     const audio = new Audio(URL.createObjectURL(await t.blob()));
+    currentAudio = audio;
+    audio.onended = () => {
+      if (currentAudio === audio) currentAudio = null;
+    };
     await audio.play();
+    await new Promise<void>((resolve) => {
+      if (audio.ended) return resolve();
+      audio.addEventListener('ended', () => resolve(), { once: true });
+      audio.addEventListener('error', () => resolve(), { once: true });
+    });
+    URL.revokeObjectURL(audio.src);
   } catch {}
 }
 
@@ -255,12 +282,114 @@ document.querySelector<HTMLButtonElement>('#menu')!.addEventListener('click', ()
 document.querySelector<HTMLButtonElement>('#refresh')!.addEventListener('click', health); document.querySelector<HTMLButtonElement>('#refreshTop')!.addEventListener('click', health);
 document.querySelector<HTMLButtonElement>('#testVoice')!.addEventListener('click', () => speak('Olá! Eu sou a Aurora. A voz está pronta para teste.'));
 autoSpeak.addEventListener('change', () => { status.textContent = autoSpeak.checked ? 'Voz automática ativada.' : 'Voz automática desativada.'; });
-language.addEventListener('change', () => { status.textContent = `Idioma: ${language.value}`; });
+language.addEventListener('change', () => { status.textContent = `Idioma: ${language.value}`; if (liveVoiceEnabled && liveRecognition) { liveRecognition.lang = language.value; } });
 form.addEventListener('submit', async (event) => { event.preventDefault(); const text = input.value; input.value = ''; try { await sendMessage(text); } catch (e) { addMessage('assistant', e instanceof Error ? e.message : 'Erro de comunicação.'); } });
 
 const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-if (SpeechRecognition) { mic.addEventListener('click', () => { const recognition = new SpeechRecognition(); recognition.lang = language.value; recognition.interimResults = false; recognition.onstart = () => mic.textContent = '◉  Ouvindo…'; recognition.onend = () => mic.textContent = '◉  Falar'; recognition.onerror = () => mic.textContent = '◉  Falar'; recognition.onresult = async (event: any) => { try { await sendMessage(event.results[0][0].transcript); } catch (e) { addMessage('assistant', e instanceof Error ? e.message : 'Erro de comunicação.'); } }; recognition.start(); }); }
-else { mic.disabled = true; mic.textContent = '◉  Voz indisponível neste navegador'; }
+
+function setLiveVoiceState(label: string) {
+  voiceLiveState.textContent = label;
+  mic.textContent = liveVoiceEnabled ? '■  Encerrar conversa ao vivo' : '◉  Iniciar conversa ao vivo';
+}
+
+function stopLiveVoice() {
+  liveVoiceEnabled = false;
+  liveVoiceProcessing = false;
+  if (liveRecognition) {
+    liveRecognition.onend = null;
+    liveRecognition.stop();
+    liveRecognition = null;
+  }
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+    currentAudio = null;
+  }
+  setLiveVoiceState('Conversa ao vivo desligada');
+}
+
+function startLiveVoice() {
+  if (!SpeechRecognition) return;
+  if (liveVoiceEnabled) return;
+  liveVoiceEnabled = true;
+  liveVoiceProcessing = false;
+
+  const recognition = new SpeechRecognition();
+  liveRecognition = recognition;
+  recognition.lang = language.value;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => setLiveVoiceState('● Ouvindo em tempo real…');
+
+  recognition.onresult = async (event: any) => {
+    let finalText = '';
+    let interimText = '';
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const transcript = String(event.results[i][0]?.transcript ?? '').trim();
+      if (event.results[i].isFinal) finalText += transcript + ' ';
+      else interimText += transcript + ' ';
+    }
+
+    if (interimText && !liveVoiceProcessing) {
+      status.textContent = 'Ouvindo: ' + interimText.trim();
+    }
+
+    if (!finalText.trim() || liveVoiceProcessing) return;
+
+    liveVoiceProcessing = true;
+    recognition.stop();
+    setLiveVoiceState('◌ Aurora processando…');
+
+    try {
+      await sendMessage(finalText.trim());
+    } catch (error) {
+      addMessage('assistant', error instanceof Error ? error.message : 'Erro de comunicação.');
+    } finally {
+      liveVoiceProcessing = false;
+      if (liveVoiceEnabled) {
+        setLiveVoiceState('● Ouvindo em tempo real…');
+        try { recognition.start(); } catch {}
+      }
+    }
+  };
+
+  recognition.onerror = (event: any) => {
+    if (!liveVoiceEnabled) return;
+    if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
+      stopLiveVoice();
+      setLiveVoiceState('Permissão de microfone necessária');
+      return;
+    }
+    setLiveVoiceState('● Reconectando escuta…');
+  };
+
+  recognition.onend = () => {
+    if (!liveVoiceEnabled || liveVoiceProcessing) return;
+    setLiveVoiceState('● Reconectando escuta…');
+    try { recognition.start(); } catch {}
+  };
+
+  try {
+    recognition.start();
+    setLiveVoiceState('● Conectando microfone…');
+  } catch {
+    stopLiveVoice();
+    setLiveVoiceState('Não foi possível iniciar o microfone');
+  }
+}
+
+if (SpeechRecognition) {
+  mic.addEventListener('click', () => {
+    if (liveVoiceEnabled) stopLiveVoice();
+    else startLiveVoice();
+  });
+} else {
+  mic.disabled = true;
+  mic.textContent = '◉  Voz indisponível neste navegador';
+  setLiveVoiceState('Este navegador não oferece reconhecimento de voz contínuo');
+}
 
 health();
 loadCapabilities();

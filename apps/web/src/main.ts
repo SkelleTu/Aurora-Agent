@@ -90,11 +90,20 @@ const input = document.querySelector<HTMLInputElement>('#message')!;
 const mic = document.querySelector<HTMLButtonElement>('#mic')!;
 const autoSpeak = document.querySelector<HTMLInputElement>('#autoSpeak')!;
 const language = document.querySelector<HTMLSelectElement>('#language')!;
+const runtimeDomains = ['avatar', 'scene', 'animation', 'voice', 'interface'] as const;
+const runtimeSeen = new Map<string, string>();
 
 const app = new Application(canvas, { graphicsDeviceOptions: { antialias: true, deviceTypes: [GraphicsDevice.WEBGL2] } });
 app.setCanvasFillMode(FILLMODE_FILL_WINDOW); app.setCanvasResolution(RESOLUTION_AUTO); app.start();
 app.scene.ambientLight = new Color(0.08, 0.1, 0.16);
 status.textContent = '3D engine pronto. Conectando ao agente…';
+
+const scenePresets: Record<string, Color> = {
+  default: new Color(0.08, 0.1, 0.16),
+  day: new Color(0.22, 0.24, 0.28),
+  night: new Color(0.025, 0.035, 0.07),
+  dramatic: new Color(0.12, 0.06, 0.16),
+};
 
 let sessionId = '';
 
@@ -134,7 +143,15 @@ async function loadCapabilities() {
   }
 }
 
-async function speak(text: string) { if (!autoSpeak.checked || !text.trim()) return; try { const t = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); if (t.ok) new Audio(URL.createObjectURL(await t.blob())).play(); } catch {} }
+async function speak(text: string, force = false) {
+  if ((!force && !autoSpeak.checked) || !text.trim()) return;
+  try {
+    const t = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+    if (!t.ok) return;
+    const audio = new Audio(URL.createObjectURL(await t.blob()));
+    await audio.play();
+  } catch {}
+}
 
 function applyAction(action: string, args: Record<string, unknown> = {}) {
   const labels: Record<string, string> = { look: 'Aurora olhando', walk: 'Aurora caminhando', sit: 'Aurora sentando', gesture: 'Aurora fazendo um gesto', speak: 'Aurora falando' };
@@ -169,6 +186,52 @@ async function sendMessage(text: string) {
   } finally { input.disabled = false; input.focus(); }
 }
 
+async function syncRuntime() {
+  try {
+    const states = await Promise.all(runtimeDomains.map(async (domain) => {
+      const result = await dispatchAction(domain, 'state');
+      return { domain, state: result.result?.state ?? {} };
+    }));
+
+    for (const { domain, state } of states) {
+      const lastCommand = state?.lastCommand;
+      const commandId = typeof lastCommand?.id === 'string' ? lastCommand.id : '';
+      if (commandId && runtimeSeen.get(domain) !== commandId) {
+        runtimeSeen.set(domain, commandId);
+        const action = String(lastCommand.action ?? '');
+        const args = lastCommand.args && typeof lastCommand.args === 'object' ? lastCommand.args as Record<string, unknown> : {};
+        if (domain === 'voice' && action === 'speak') {
+          await speak(String(args.text ?? state.text ?? ''), true);
+          await dispatchAction('voice', 'stop');
+        } else if (domain === 'interface') {
+          if (action === 'notify') addMessage('assistant', '[Aura] ' + String(state.notification ?? ''));
+          if (action === 'setPanel') {
+            const panel = String(state.panel ?? 'chat');
+            document.querySelector<HTMLButtonElement>('.tab[data-tab="' + panel + '"]')?.click();
+          }
+          if (action === 'setStatus') status.textContent = String(state.status ?? '');
+        }
+      }
+
+      if (domain === 'avatar') {
+        const pose = String(state.pose ?? '');
+        const expression = String(state.expression ?? '');
+        const outfit = String(state.outfit ?? '');
+        if (pose) status.textContent = 'Avatar: ' + pose + (expression ? ' · ' + expression : '') + (outfit ? ' · ' + outfit : '');
+        document.documentElement.dataset.avatarPose = pose;
+      } else if (domain === 'scene') {
+        const preset = String(state.preset ?? 'default');
+        app.scene.ambientLight = scenePresets[preset] ?? scenePresets.default;
+        document.documentElement.dataset.scene = preset;
+      } else if (domain === 'animation') {
+        const name = String(state.name ?? '');
+        if (name) status.textContent = state.playing ? 'Animação: ' + name : 'Animação parada: ' + name;
+        document.documentElement.dataset.animation = name;
+      }
+    }
+  } catch {}
+}
+
 async function runAvatarAction(action: string, args: Record<string, unknown> = {}) {
   applyAction(action, args);
   const label = action === 'setExpression' ? `Expressão: ${args.expression}` : action === 'setOutfit' ? `Roupa: ${args.outfit}` : `[${action}]`;
@@ -199,3 +262,5 @@ else { mic.disabled = true; mic.textContent = '◉  Voz indisponível neste nave
 
 health();
 loadCapabilities();
+void syncRuntime();
+window.setInterval(() => { void syncRuntime(); }, 800);

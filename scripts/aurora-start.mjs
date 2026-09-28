@@ -31,3 +31,20 @@ if (!source.includes(routeMarker)) {
 
 await writeFile(serverPath, source, 'utf8');
 await import(pathToFileURL(serverPath).href + `?auroraControl=${Date.now()}`);
+
+if (process.env.AURORA_SELF_TEST === 'true') {
+  setTimeout(async () => {
+    try {
+      const { spawn } = await import('node:child_process');
+      const child = spawn(process.execPath, ['scripts/aurora-render-self-test.mjs'], {
+        cwd: root,
+        env: { ...process.env },
+        stdio: 'inherit',
+      });
+      child.on('error', (error) => console.error(`Aurora Render self-test error: ${error.message}`));
+      child.on('close', (code) => console.log(`Aurora Render self-test exit=${code}`));
+    } catch (error) {
+      console.error(`Aurora Render self-test launch failed: ${error?.message || String(error)}`);
+    }
+  }, 3000);
+}

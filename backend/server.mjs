@@ -5,12 +5,14 @@ import { fileURLToPath } from 'node:url';
 import { InferenceClient } from '@huggingface/inference';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
-import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES } from './providers/huggingface-capabilities.mjs';
+import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
+import { createAuraBridge } from './aurora/bridge.mjs';
 
 const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
 const provider = createAIProvider();
-const aurora = createAuroraCore({ provider });
+const auraBridge = createAuraBridge();
+const aurora = createAuroraCore({ provider, auraBridge });
 const HF_TOKEN = process.env.HF_TOKEN;
 const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
 const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
@@ -31,14 +33,14 @@ async function transcribe(req) {
   requireHF();
   const data = await readBuffer(req);
   const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data });
-  return { text: result.text ?? '' };
+  return { text: result.text ?? '', model: HF_STT_MODEL };
 }
 
 async function synthesize(text) {
   requireHF();
   const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER } : undefined;
   const audio = await hf.textToSpeech({ model: HF_TTS_MODEL, inputs: text }, options);
-  return { buffer: Buffer.from(await audio.arrayBuffer()), contentType: audio.type || 'audio/wav' };
+  return { buffer: Buffer.from(await audio.arrayBuffer()), contentType: audio.type || 'audio/wav', model: HF_TTS_MODEL };
 }
 
 function serveWeb(req, res) {
@@ -59,23 +61,57 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     if (req.method === 'GET' && req.url === '/health') return json(res, 200, {
-      ok: true, agent: 'aurora', version: '0.7.0', provider: provider.name, model: provider.model,
-      configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
-      architecture: { reasoning: 'huggingface', capabilities: 'huggingface', voice: 'huggingface', tools: 'aurora-system' },
+      ok: true,
+      agent: 'aurora',
+      version: '0.8.0',
+      provider: provider.name,
+      model: provider.model,
+      configured: provider.configured ?? true,
+      voice: Boolean(HF_TOKEN),
+      web: existsSync(join(webRoot, 'index.html')),
+      auraBridge: { configured: auraBridge.configured },
+      architecture: { reasoning: 'huggingface', capabilities: 'huggingface-adapters', voice: 'huggingface', tools: 'aura-system-bridge' },
       voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL },
       modelProfiles: AURORA_MODEL_PROFILES,
       capabilities: Object.keys(HUGGING_FACE_TASKS),
     });
+
+    if (req.method === 'GET' && req.url === '/api/capabilities') {
+      return json(res, 200, { groups: ['cognition', 'audio', 'vision', 'creation'], capabilities: listAuroraCapabilities() });
+    }
+
+    if (req.method === 'GET' && req.url === '/api/aura/status') {
+      return json(res, 200, { configured: auraBridge.configured, health: auraBridge.configured ? await auraBridge.health(req.signal) : null });
+    }
+
     if (req.method === 'GET' && req.url === '/api/huggingface/models') {
       if (!provider.listChatModels) return json(res, 501, { error: 'model_catalog_unavailable' });
       return json(res, 200, await provider.listChatModels());
     }
+
     if (req.method === 'GET' && req.url.startsWith('/api/huggingface/hub-models')) {
       if (!provider.listHubModels) return json(res, 501, { error: 'hub_catalog_unavailable' });
       const url = new URL(req.url, 'http://localhost');
-      return json(res, 200, await provider.listHubModels({ task: url.searchParams.get('task') || undefined, provider: url.searchParams.get('provider') || 'all', limit: Math.min(Number(url.searchParams.get('limit') || 100), 500) }));
+      return json(res, 200, await provider.listHubModels({
+        task: url.searchParams.get('task') || undefined,
+        provider: url.searchParams.get('provider') || 'all',
+        author: url.searchParams.get('author') || undefined,
+        limit: Math.min(Number(url.searchParams.get('limit') || 100), 500),
+      }));
     }
+
+    if (req.method === 'GET' && req.url.startsWith('/api/huggingface/access-models')) {
+      if (!provider.listAccessibleModels) return json(res, 501, { error: 'accessible_model_catalog_unavailable' });
+      const url = new URL(req.url, 'http://localhost');
+      return json(res, 200, await provider.listAccessibleModels({
+        task: url.searchParams.get('task') || undefined,
+        provider: url.searchParams.get('provider') || 'all',
+        limit: Math.min(Number(url.searchParams.get('limit') || 500), 500),
+      }));
+    }
+
     if (req.method === 'POST' && req.url === '/api/session') return json(res, 200, { sessionId: crypto.randomUUID(), status: 'ready' });
+
     if (req.method === 'POST' && req.url === '/api/chat') {
       const body = await readJson(req);
       const result = await aurora.handleMessage({ sessionId: body.sessionId, message: body.message, signal: req.signal });
@@ -84,10 +120,18 @@ const server = http.createServer(async (req, res) => {
         ...result.actions.map((action) => ({ type: 'agent.action', timestamp: new Date().toISOString(), payload: action })),
       ] });
     }
+
+    if (req.method === 'POST' && req.url === '/api/action') {
+      const body = await readJson(req);
+      if (!body.domain || !body.action) return json(res, 400, { ok: false, error: 'domain_and_action_required' });
+      const result = await auraBridge.dispatch({ domain: String(body.domain), action: String(body.action), args: body.args && typeof body.args === 'object' ? body.args : {}, signal: req.signal });
+      return json(res, result.ok ? 200 : 503, result);
+    }
+
     if (req.method === 'POST' && req.url === '/api/transcribe') return json(res, 200, await transcribe(req));
     if (req.method === 'POST' && req.url === '/api/tts') {
       const body = await readJson(req); const audio = await synthesize(String(body.text ?? '').trim());
-      res.writeHead(200, { 'content-type': audio.contentType, 'cache-control': 'no-store' }); return res.end(audio.buffer);
+      res.writeHead(200, { 'content-type': audio.contentType, 'cache-control': 'no-store', 'x-aurora-model': audio.model }); return res.end(audio.buffer);
     }
     if (req.method === 'GET') return serveWeb(req, res);
     return json(res, 404, { error: 'not_found' });

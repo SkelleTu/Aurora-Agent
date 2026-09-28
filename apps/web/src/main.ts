@@ -49,7 +49,7 @@ root.innerHTML = `
         <div class="panel-title"><div><span class="section-kicker">AUDIO</span><h3>Voz & Escuta</h3></div></div>
         <div class="voice-card"><div class="voice-orb">◖</div><div><strong id="voice">Verificando…</strong><small id="voiceModel">Modelo de voz não informado</small></div></div>
         <label class="switch"><input id="autoSpeak" type="checkbox" checked/><span>Falar respostas automaticamente</span></label>
-        <label>Idioma<select id="language"><option value="pt-BR">Português (Brasil)</option><option value="en-US">English</option><option value="es-ES">Español</option></select></label>
+        <label>Idioma<select id="language"><option value="pt-BR">Português (Brasil)</option><option value="en-US">English</option><option value="es-ES">Español</option></select></label><label>Modelo Live<input id="liveModel" value="" placeholder="modelo padrão do provedor"/></label>
         <button id="testVoice" class="wide primary" type="button">▶ &nbsp; Testar voz</button>
       </section>
 
@@ -100,6 +100,7 @@ let liveTurnId = 0;
 let liveMicStream: MediaStream | null = null;
 let currentAudio: HTMLAudioElement | null = null;
 const language = document.querySelector<HTMLSelectElement>('#language')!;
+const liveModel = document.querySelector<HTMLInputElement>('#liveModel')!;
 const runtimeDomains = ['avatar', 'scene', 'animation', 'voice', 'interface'] as const;
 const runtimeSeen = new Map<string, string>();
 
@@ -136,6 +137,7 @@ async function health() {
     const online = Boolean(data.ok);
     connection.textContent = online ? 'Online' : 'Indisponível'; topConnection.textContent = online ? 'Sistema online' : 'Sistema offline';
     backendState.textContent = online ? 'Operacional' : 'Indisponível'; reasoning.textContent = data.provider || '—'; model.textContent = data.model || '—'; modelCompact.textContent = data.model || '—';
+    liveModel.value = liveModel.value || data.model || '';
     voice.textContent = data.voice ? 'Configurada' : 'Não configurada'; voiceModel.textContent = data.voiceModels ? `${data.voiceModels.stt} · ${data.voiceModels.tts}` : 'Modelo de voz não informado'; webState.textContent = data.web ? 'Disponível' : 'Ausente';
     auraBridge.textContent = data.auraBridge?.configured ? 'Configurada' : 'Não configurada';
     status.textContent = online ? 'Aurora System operacional.' : 'Backend indisponível.';
@@ -292,7 +294,8 @@ document.querySelector<HTMLButtonElement>('#menu')!.addEventListener('click', ()
 document.querySelector<HTMLButtonElement>('#refresh')!.addEventListener('click', health); document.querySelector<HTMLButtonElement>('#refreshTop')!.addEventListener('click', health);
 document.querySelector<HTMLButtonElement>('#testVoice')!.addEventListener('click', () => speak('Olá! Eu sou a Aurora. A voz está pronta para teste.'));
 autoSpeak.addEventListener('change', () => { status.textContent = autoSpeak.checked ? 'Voz automática ativada.' : 'Voz automática desativada.'; });
-language.addEventListener('change', () => { status.textContent = `Idioma: ${language.value}`; if (liveVoiceEnabled && liveRecognition) { liveRecognition.lang = language.value; } });
+language.addEventListener('change', () => { status.textContent = `Idioma: ${language.value}`; });
+liveModel.addEventListener('change', () => { liveState.model = liveModel.value.trim(); status.textContent = `Modelo Live: ${liveState.model || 'padrão do provedor'}`; });
 form.addEventListener('submit', async (event) => { event.preventDefault(); const text = input.value; input.value = ''; try { await sendMessage(text); } catch (e) { addMessage('assistant', e instanceof Error ? e.message : 'Erro de comunicação.'); } });
 
 const liveState = {
@@ -551,6 +554,7 @@ async function startLiveVoice() {
       liveState.socket.send(event.data.pcm);
     };
 
+    liveState.model = liveModel.value.trim();
     liveSend({ type:'session.configure', model:liveState.model || undefined, language:language.value });
     liveState.connecting = false;
     setLiveVoiceState('● Ouvindo em tempo real…');

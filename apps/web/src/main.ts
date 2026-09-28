@@ -375,9 +375,7 @@ async function startLiveVoice() {
   const startRecognition = () => {
     if (!liveVoiceEnabled || liveRecognition !== recognition) return;
     try {
-      const track = liveMicStream?.getAudioTracks()[0];
-      if (track) recognition.start(track);
-      else recognition.start();
+      recognition.start();
     } catch {}
   };
 

@@ -52,7 +52,7 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
         },
         tools: [{ functionDeclarations: [geminiTool()] }],
-        inputAudioTranscription: {},
+        // Input transcription is handled by the dedicated Gemini Live transcriber.
         outputAudioTranscription: {},
       },
     }));

@@ -16,7 +16,7 @@ export function createAuraBridge(config = {}) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(joinUrl(baseUrl, '/health'), {
+        const response = await fetch(joinUrl(baseUrl, '/api/healthz'), {
           method: 'GET',
           headers: token ? { authorization: `Bearer ${token}` } : {},
           signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,

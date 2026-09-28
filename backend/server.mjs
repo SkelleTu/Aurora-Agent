@@ -47,6 +47,12 @@ async function readBuffer(req) { const chunks = []; for await (const chunk of re
 async function readJson(req) { const buffer = await readBuffer(req); if (!buffer.length) return {}; return JSON.parse(buffer.toString('utf8')); }
 function requireHF() { if (!hf) throw new Error('HF_TOKEN is required for Hugging Face voice features.'); }
 
+function audioBlob(buffer) {
+  const value = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  const contentType = value.length >= 4 && value.toString('ascii', 0, 4) === 'RIFF' ? 'audio/wav' : 'audio/mpeg';
+  return new Blob([value], { type: contentType });
+}
+
 function decodeCapabilityArgs(value) {
   if (Array.isArray(value)) return value.map(decodeCapabilityArgs);
   if (!value || typeof value !== 'object') return value;
@@ -81,7 +87,7 @@ async function runCapability(body, signal) {
 async function transcribe(req) {
   requireHF();
   const data = await readBuffer(req);
-  const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data });
+  const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: audioBlob(data) });
   return { text: result.text ?? '', model: HF_STT_MODEL };
 }
 
@@ -222,7 +228,7 @@ liveWss.on('connection', (socket) => {
   const live = new AuroraLiveSession({
     provider, realtimeAdapterFactory: liveAdapterFactory, auraBridge, sessionId,
     model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model,
-    transcribe: async (pcm, signal) => { requireHF(); const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: pcm }, { signal }); return { text: result.text ?? '', model: HF_STT_MODEL }; },
+    transcribe: async (pcm, signal) => { requireHF(); const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: audioBlob(pcm) }, { signal }); return { text: result.text ?? '', model: HF_STT_MODEL }; },
     synthesize: async (text, signal) => synthesize(text, signal),
     send: (event) => { recordLiveTelemetry(event.type, sessionId, event); if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });

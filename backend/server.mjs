@@ -190,7 +190,8 @@ liveWss.on('connection', (socket) => {
     },
     send: (event) => { if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });
-  void live.configure({ language: LIVE_LANGUAGE, model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, ...(liveAdapterFactory ? { realtimeAdapterFactory: liveAdapterFactory } : {}) });
+  // The browser explicitly configures the Live session after the WebSocket is ready.
+  // This avoids a server-side connection race and makes provider setup errors observable to the client.
   socket.on('message', (raw, isBinary) => {
     try {
       if (isBinary) return live.audio(Buffer.from(raw));

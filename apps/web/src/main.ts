@@ -298,13 +298,20 @@ form.addEventListener('submit', async (event) => { event.preventDefault(); const
 const liveState = {
   enabled: false,
   connecting: false,
-  peer: null as RTCPeerConnection | null,
-  events: null as RTCDataChannel | null,
+  socket: null as WebSocket | null,
   microphone: null as MediaStream | null,
-  audio: null as HTMLAudioElement | null,
-  sessionId: '',
-  assistantTranscript: '',
-  toolCalls: new Set<string>(),
+  audioContext: null as AudioContext | null,
+  source: null as MediaStreamAudioSourceNode | null,
+  worklet: null as AudioWorkletNode | null,
+  playback: [] as { id:string; audio:HTMLAudioElement; durationMs:number }[],
+  currentPlayback: null as { id:string; audio:HTMLAudioElement; durationMs:number } | null,
+  playbackTimer: 0 as number | undefined,
+  speaking: false,
+  silenceSince: 0,
+  noiseFloor: 0.008,
+  noiseSamples: 0,
+  transcript: '',
+  model: '',
 };
 
 function setLiveVoiceState(label: string) {
@@ -312,119 +319,170 @@ function setLiveVoiceState(label: string) {
   mic.textContent = liveState.enabled ? '■  Encerrar conversa ao vivo' : '◉  Iniciar conversa ao vivo';
 }
 
-function sendRealtimeEvent(event: Record<string, unknown>) {
-  if (liveState.events?.readyState === 'open') liveState.events.send(JSON.stringify(event));
+function liveSend(event: Record<string, unknown>) {
+  if (liveState.socket?.readyState === WebSocket.OPEN) liveState.socket.send(JSON.stringify(event));
 }
 
-async function executeRealtimeTool(call: any) {
-  const callId = String(call?.call_id || '');
-  if (!callId || liveState.toolCalls.has(callId)) return;
-  liveState.toolCalls.add(callId);
-  let args: Record<string, unknown> = {};
-  try { args = JSON.parse(String(call.arguments || '{}')); } catch { args = {}; }
-  try {
-    const r = await fetch('/api/realtime/tool', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: call.name, args }),
-    });
-    const result = await r.json().catch(() => ({ ok: false, error: 'invalid_tool_response' }));
-    sendRealtimeEvent({
-      type: 'conversation.item.create',
-      item: {
-        type: 'function_call_output',
-        call_id: callId,
-        output: JSON.stringify(result),
-      },
-    });
-    sendRealtimeEvent({ type: 'response.create' });
-  } catch (error) {
-    sendRealtimeEvent({
-      type: 'conversation.item.create',
-      item: {
-        type: 'function_call_output',
-        call_id: callId,
-        output: JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'Tool execution failed' }),
-      },
-    });
-    sendRealtimeEvent({ type: 'response.create' });
+function stopPlayback(interrupted = false) {
+  if (liveState.playbackTimer) window.clearInterval(liveState.playbackTimer);
+  liveState.playbackTimer = undefined;
+  if (liveState.currentPlayback) {
+    const item = liveState.currentPlayback;
+    if (interrupted) {
+      liveSend({ type:'playback.progress', ms: Math.round(item.audio.currentTime * 1000) });
+      item.audio.pause();
+      item.audio.currentTime = 0;
+    }
+    URL.revokeObjectURL(item.audio.src);
+    liveState.currentPlayback = null;
   }
+  for (const item of liveState.playback) {
+    item.audio.pause();
+    URL.revokeObjectURL(item.audio.src);
+  }
+  liveState.playback = [];
 }
 
-function handleRealtimeEvent(event: any) {
+function playNextLiveAudio() {
+  if (!liveState.enabled || liveState.currentPlayback || !liveState.playback.length) return;
+  const item = liveState.playback.shift()!;
+  liveState.currentPlayback = item;
+  currentAudio = item.audio;
+  item.audio.onended = () => {
+    if (liveState.currentPlayback?.id === item.id) {
+      liveSend({ type:'playback.progress', ms:item.durationMs || Math.round(item.audio.currentTime * 1000) });
+      liveState.currentPlayback = null;
+      currentAudio = null;
+      URL.revokeObjectURL(item.audio.src);
+      playNextLiveAudio();
+    }
+  };
+  item.audio.onerror = () => {
+    liveState.currentPlayback = null;
+    currentAudio = null;
+    URL.revokeObjectURL(item.audio.src);
+    playNextLiveAudio();
+  };
+  void item.audio.play().catch(() => {});
+  liveState.playbackTimer = window.setInterval(() => {
+    if (liveState.currentPlayback === item) liveSend({ type:'playback.progress', ms:Math.round(item.audio.currentTime * 1000) });
+  }, 100);
+}
+
+function handleLiveEvent(event: any) {
   switch (event?.type) {
-    case 'session.created':
     case 'session.updated':
       liveState.connecting = false;
+      liveState.model = String(event.model || '');
+      modelCompact.textContent = liveState.model || modelCompact.textContent;
       setLiveVoiceState('● Ouvindo em tempo real…');
       status.textContent = 'Aurora Live conectada.';
       break;
     case 'input_audio_buffer.speech_started':
+      if (!liveState.speaking) {
+        liveState.speaking = true;
+        stopPlayback(true);
+        liveSend({ type:'response.cancel' });
+      }
       setLiveVoiceState('● Você está falando…');
-      status.textContent = 'Aurora ouvindo você.';
       break;
     case 'input_audio_buffer.speech_stopped':
+      liveState.speaking = false;
       setLiveVoiceState('◌ Aurora pensando…');
       break;
     case 'response.created':
-      setLiveVoiceState('◌ Aurora falando…');
+      setLiveVoiceState('◌ Aurora preparando resposta…');
       break;
-    case 'response.output_audio_transcript.delta':
-      liveState.assistantTranscript += String(event.delta || '');
+    case 'response.text.delta':
+      liveState.transcript += String(event.delta || '');
       break;
-    case 'response.output_audio_transcript.done':
-      if (liveState.assistantTranscript.trim()) {
-        addMessage('assistant', liveState.assistantTranscript.trim());
-        liveState.assistantTranscript = '';
+    case 'response.text.completed':
+      if (String(event.text || '').trim()) {
+        addMessage('assistant', String(event.text).trim());
+        liveState.transcript = '';
       }
       break;
-    case 'response.output_item.done':
-      if (event.item?.type === 'function_call') void executeRealtimeTool(event.item);
+    case 'response.audio.segment':
+      try {
+        const bytes = Uint8Array.from(atob(String(event.data || '')), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type:String(event.contentType || 'audio/wav') });
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.setAttribute('playsinline', 'true');
+        liveState.playback.push({ id:String(event.segmentId), audio, durationMs:Number(event.durationMs || 0) });
+        setLiveVoiceState('◌ Aurora falando…');
+        playNextLiveAudio();
+      } catch {}
+      break;
+    case 'response.audio.cleared':
+    case 'response.cancelled':
+    case 'conversation.item.truncated':
+      stopPlayback(true);
       break;
     case 'response.done':
-      if (event.response?.status === 'failed') {
-        const detail = event.response?.status_details?.error?.message || 'A resposta Live falhou.';
-        status.textContent = detail;
-      } else if (liveState.enabled) {
-        setLiveVoiceState('● Ouvindo em tempo real…');
-      }
+      if (event.status === 'cancelled') setLiveVoiceState('● Ouvindo em tempo real…');
+      else if (liveState.enabled) setLiveVoiceState('● Ouvindo em tempo real…');
+      break;
+    case 'tool.completed':
+      status.textContent = 'Aurora executou uma ação no Aura System.';
       break;
     case 'error':
-      status.textContent = event.error?.message || 'Erro na sessão Aurora Live.';
+      status.textContent = String(event.error || 'Erro na sessão Aurora Live.');
+      break;
+    case 'session.closed':
+      setLiveVoiceState('Conversa ao vivo desligada');
       break;
   }
 }
 
+function captureSourceCode() {
+  return `class AuroraCaptureProcessor extends AudioWorkletProcessor {
+    process(inputs) {
+      const input = inputs[0], channel = input && input[0];
+      if (!channel || !channel.length) return true;
+      let sum = 0;
+      for (let i=0;i<channel.length;i++) sum += channel[i]*channel[i];
+      const rms = Math.sqrt(sum/channel.length);
+      const ratio = sampleRate/16000;
+      const n = Math.max(1, Math.floor(channel.length/ratio));
+      const pcm = new Int16Array(n);
+      for (let i=0;i<n;i++) {
+        const s=Math.floor(i*ratio), e=Math.min(channel.length,Math.max(s+1,Math.floor((i+1)*ratio)));
+        let v=0; for(let j=s;j<e;j++) v+=channel[j]; v/=Math.max(1,e-s);
+        pcm[i]=Math.max(-32768,Math.min(32767,Math.round(v*32767)));
+      }
+      this.port.postMessage({pcm:pcm.buffer,rms},[pcm.buffer]);
+      return true;
+    }
+  }
+  registerProcessor('aurora-live-capture', AuroraCaptureProcessor);`;
+}
+
 async function stopLiveVoice() {
-  if (!liveState.enabled && !liveState.peer) return;
+  if (!liveState.enabled && !liveState.socket) return;
   liveState.enabled = false;
   setLiveVoiceState('Encerrando conversa ao vivo…');
-  if (liveState.events?.readyState === 'open') sendRealtimeEvent({ type: 'session.close' });
-  const peer = liveState.peer;
-  const microphone = liveState.microphone;
-  window.setTimeout(() => {
-    try { peer?.close(); } catch {}
-    microphone?.getTracks().forEach((track) => track.stop());
-    if (liveState.audio) {
-      liveState.audio.pause();
-      liveState.audio.srcObject = null;
-    }
-    liveState.peer = null;
-    liveState.events = null;
-    liveState.microphone = null;
-    liveState.audio = null;
-    liveState.sessionId = '';
-    liveState.assistantTranscript = '';
-    liveState.toolCalls.clear();
-    setLiveVoiceState('Conversa ao vivo desligada');
-    status.textContent = 'Aurora Live encerrada.';
-  }, 500);
+  liveSend({ type:'session.close' });
+  stopPlayback(true);
+  try { liveState.worklet?.disconnect(); } catch {}
+  try { liveState.source?.disconnect(); } catch {}
+  liveState.microphone?.getTracks().forEach(t => t.stop());
+  try { await liveState.audioContext?.close(); } catch {}
+  try { liveState.socket?.close(); } catch {}
+  liveState.socket = null;
+  liveState.microphone = null;
+  liveState.audioContext = null;
+  liveState.source = null;
+  liveState.worklet = null;
+  liveState.speaking = false;
+  liveState.transcript = '';
+  setLiveVoiceState('Conversa ao vivo desligada');
+  status.textContent = 'Aurora Live encerrada.';
 }
 
 async function startLiveVoice() {
   if (liveState.enabled || liveState.connecting) return;
-  if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
-    setLiveVoiceState('WebRTC de voz não disponível neste navegador');
+  if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext || !window.WebSocket) {
+    setLiveVoiceState('Áudio Live não disponível neste navegador');
     return;
   }
   liveState.enabled = true;
@@ -432,79 +490,80 @@ async function startLiveVoice() {
   setLiveVoiceState('● Conectando Aurora Live…');
   try {
     const microphone = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 },
     });
-    if (!liveState.enabled) {
-      microphone.getTracks().forEach((track) => track.stop());
-      return;
-    }
     liveState.microphone = microphone;
 
-    const tokenResponse = await fetch('/api/realtime/token', { method: 'POST', cache: 'no-store' });
-    const tokenData = await tokenResponse.json().catch(() => ({}));
-    if (!tokenResponse.ok || !tokenData.value) throw new Error(tokenData.message || 'Aurora Live não está configurada no servidor.');
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(protocol + '//' + location.host + '/api/live');
+    socket.binaryType = 'arraybuffer';
+    liveState.socket = socket;
 
-    const peer = new RTCPeerConnection();
-    liveState.peer = peer;
-    const audio = new Audio();
-    audio.autoplay = true;
-    audio.setAttribute('playsinline', 'true');
-    liveState.audio = audio;
-    peer.ontrack = (event) => {
-      const stream = event.streams[0] || new MediaStream([event.track]);
-      audio.srcObject = stream;
-      void audio.play().catch(() => {});
-    };
-    microphone.getTracks().forEach((track) => peer.addTrack(track, microphone));
-
-    const events = peer.createDataChannel('oai-events');
-    liveState.events = events;
-    events.onmessage = (message) => {
-      try { handleRealtimeEvent(JSON.parse(message.data)); } catch {}
-    };
-    events.onopen = () => {
-      setLiveVoiceState('● Ouvindo em tempo real…');
-      status.textContent = 'Aurora Live pronta.';
-    };
-    events.onerror = () => { status.textContent = 'Canal de eventos Aurora Live apresentou um erro.'; };
-    events.onclose = () => {
-      if (liveState.enabled) {
-        status.textContent = 'Conexão Aurora Live encerrada.';
-        liveState.enabled = false;
-        setLiveVoiceState('Conversa ao vivo desligada');
-      }
-    };
-    peer.onconnectionstatechange = () => {
-      const state = peer.connectionState;
-      if (state === 'connected') {
-        liveState.connecting = false;
-        setLiveVoiceState('● Ouvindo em tempo real…');
-      } else if (state === 'failed' || state === 'closed') {
-        if (liveState.enabled) void stopLiveVoice();
-      }
-    };
-
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + tokenData.value, 'content-type': 'application/sdp' },
-      body: offer.sdp,
+    await new Promise<void>((resolve,reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('Tempo esgotado ao conectar Aurora Live.')), 10000);
+      socket.onopen = () => { window.clearTimeout(timeout); resolve(); };
+      socket.onerror = () => { window.clearTimeout(timeout); reject(new Error('Não foi possível abrir o canal Aurora Live.')); };
     });
-    const answerSdp = await sdpResponse.text();
-    if (!sdpResponse.ok) throw new Error(answerSdp || 'Falha ao conectar ao OpenAI Realtime.');
-    await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-    liveState.sessionId = sdpResponse.headers.get('Location') || '';
+
+    socket.onmessage = (message) => {
+      if (typeof message.data !== 'string') return;
+      try { handleLiveEvent(JSON.parse(message.data)); } catch {}
+    };
+    socket.onclose = () => {
+      if (liveState.enabled) void stopLiveVoice();
+    };
+
+    const ctx = new AudioContext({ sampleRate:48000 });
+    liveState.audioContext = ctx;
+    await ctx.resume();
+    const source = ctx.createMediaStreamSource(microphone);
+    liveState.source = source;
+    const blob = new Blob([captureSourceCode()], { type:'application/javascript' });
+    const workletUrl = URL.createObjectURL(blob);
+    await ctx.audioWorklet.addModule(workletUrl);
+    URL.revokeObjectURL(workletUrl);
+    const worklet = new AudioWorkletNode(ctx, 'aurora-live-capture');
+    liveState.worklet = worklet;
+    source.connect(worklet);
+
+    worklet.port.onmessage = (event) => {
+      if (!liveState.enabled || liveState.socket?.readyState !== WebSocket.OPEN) return;
+      const rms = Number(event.data?.rms || 0);
+      if (liveState.noiseSamples < 25) {
+        liveState.noiseFloor = (liveState.noiseFloor * liveState.noiseSamples + rms) / (liveState.noiseSamples + 1);
+        liveState.noiseSamples += 1;
+      }
+      const threshold = Math.max(0.014, liveState.noiseFloor * 2.8);
+      if (rms >= threshold) {
+        liveState.silenceSince = 0;
+        if (!liveState.speaking) {
+          liveState.speaking = true;
+          liveSend({ type:'input_audio_buffer.speech_started' });
+        }
+      } else if (liveState.speaking) {
+        if (!liveState.silenceSince) liveState.silenceSince = performance.now();
+        if (performance.now() - liveState.silenceSince > 420) {
+          liveState.speaking = false;
+          liveSend({ type:'input_audio_buffer.speech_stopped' });
+          liveState.silenceSince = 0;
+        }
+      }
+      liveState.socket.send(event.data.pcm);
+    };
+
+    liveSend({ type:'session.configure', model:liveState.model || undefined, language:language.value });
+    liveState.connecting = false;
+    setLiveVoiceState('● Ouvindo em tempo real…');
+    status.textContent = 'Aurora Live pronta.';
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Falha ao iniciar Aurora Live.';
     status.textContent = message;
     liveState.enabled = false;
     liveState.connecting = false;
-    try { liveState.peer?.close(); } catch {}
-    liveState.microphone?.getTracks().forEach((track) => track.stop());
-    liveState.peer = null;
-    liveState.events = null;
-    liveState.microphone = null;
+    liveState.microphone?.getTracks().forEach(t => t.stop());
+    try { await liveState.audioContext?.close(); } catch {}
+    try { liveState.socket?.close(); } catch {}
+    liveState.socket = null;
     setLiveVoiceState('Falha ao iniciar conversa ao vivo');
   }
 }

@@ -6,7 +6,6 @@ import { InferenceClient } from '@huggingface/inference';
 import { WebSocketServer } from 'ws';
 import { AuroraLiveSession } from './live/engine.mjs';
 import { GeminiLiveAdapter } from './live/gemini-live.mjs';
-import { GeminiLiveTranscriber } from './live/gemini-transcriber.mjs';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
@@ -166,13 +165,9 @@ liveWss.on('connection', (socket) => {
   const liveAdapterFactory = LIVE_PROVIDER === 'gemini'
     ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge })
     : null;
-  const transcriberFactory = LIVE_PROVIDER === 'gemini'
-    ? ({ language }) => new GeminiLiveTranscriber({ apiKey: GOOGLE_API_KEY, language })
-    : null;
   const live = new AuroraLiveSession({
     provider,
     realtimeAdapterFactory: liveAdapterFactory,
-    transcriberFactory,
     auraBridge,
     sessionId: crypto.randomUUID(),
     model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model,

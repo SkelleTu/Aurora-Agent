@@ -22,8 +22,8 @@ const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
 const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
 const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;
 const LIVE_LANGUAGE = process.env.AURORA_LIVE_LANGUAGE || 'pt-BR';
-const LIVE_PROVIDER = String(process.env.AURORA_LIVE_PROVIDER || 'huggingface').toLowerCase();
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
+const LIVE_PROVIDER = String(process.env.AURORA_LIVE_PROVIDER || (GOOGLE_API_KEY ? 'gemini' : 'huggingface')).toLowerCase();
 const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'gemini-3.8-live';
 
 function wavDurationMs(buffer) {

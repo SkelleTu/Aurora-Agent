@@ -26,14 +26,8 @@ export function createHuggingFaceProvider(config = {}) {
     profiles: AURORA_MODEL_PROFILES,
 
     async chat({ messages, temperature = 0.7, maxTokens = 1024, tools, signal, model: requestedModel } = {}) {
-      const body = {
-        model: requestedModel ?? model,
-        messages,
-        temperature,
-        max_tokens: maxTokens,
-      };
+      const body = { model: requestedModel ?? model, messages, temperature, max_tokens: maxTokens };
       if (tools?.length) body.tools = tools;
-
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
@@ -53,7 +47,7 @@ export function createHuggingFaceProvider(config = {}) {
 
     async listChatModels() {
       return readJsonResponse(
-        await fetch(`${baseUrl}/models`, { headers: { authorization: `Bearer ${apiKey}` }),
+        await fetch(`${baseUrl}/models`, { headers: { authorization: `Bearer ${apiKey}` } }),
         'Hugging Face model catalog',
       );
     },
@@ -83,11 +77,7 @@ export function createHuggingFaceProvider(config = {}) {
       const identity = await this.whoAmI();
       const author = identity?.name || identity?.fullname || identity?.user?.name;
       const models = await this.listHubModels({ task, provider, limit, author });
-      return {
-        owner: author || null,
-        models,
-        count: Array.isArray(models) ? models.length : 0,
-      };
+      return { owner: author || null, models, count: Array.isArray(models) ? models.length : 0 };
     },
   };
 }

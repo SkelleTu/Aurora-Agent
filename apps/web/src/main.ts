@@ -105,12 +105,7 @@ const scenePresets: Record<string, Color> = {
   dramatic: new Color(0.12, 0.06, 0.16),
 };
 
-const scenePresets: Record<string, Color> = {
-  default: new Color(0.08, 0.1, 0.16),
-  day: new Color(0.22, 0.24, 0.28),
-  night: new Color(0.025, 0.035, 0.07),
-  dramatic: new Color(0.12, 0.06, 0.16),
-};
+
 
 let sessionId = '';
 
@@ -239,52 +234,6 @@ async function syncRuntime() {
   } catch {}
 }
 
-async function syncRuntime() {
-  try {
-    const states = await Promise.all(runtimeDomains.map(async (domain) => {
-      const result = await dispatchAction(domain, 'state');
-      return { domain, state: result.result?.state ?? {} };
-    }));
-
-    for (const { domain, state } of states) {
-      const lastCommand = state?.lastCommand;
-      const commandId = typeof lastCommand?.id === 'string' ? lastCommand.id : '';
-      if (commandId && runtimeSeen.get(domain) !== commandId) {
-        runtimeSeen.set(domain, commandId);
-        const action = String(lastCommand.action ?? '');
-        const args = lastCommand.args && typeof lastCommand.args === 'object' ? lastCommand.args as Record<string, unknown> : {};
-        if (domain === 'voice' && action === 'speak') {
-          await speak(String(args.text ?? state.text ?? ''), true);
-          await dispatchAction('voice', 'stop');
-        } else if (domain === 'interface') {
-          if (action === 'notify') addMessage('assistant', '[Aura] ' + String(state.notification ?? ''));
-          if (action === 'setPanel') {
-            const panel = String(state.panel ?? 'chat');
-            document.querySelector<HTMLButtonElement>('.tab[data-tab="' + panel + '"]')?.click();
-          }
-          if (action === 'setStatus') status.textContent = String(state.status ?? '');
-        }
-      }
-
-      if (domain === 'avatar') {
-        const pose = String(state.pose ?? '');
-        const expression = String(state.expression ?? '');
-        const outfit = String(state.outfit ?? '');
-        if (pose) status.textContent = 'Avatar: ' + pose + (expression ? ' · ' + expression : '') + (outfit ? ' · ' + outfit : '');
-        document.documentElement.dataset.avatarPose = pose;
-      } else if (domain === 'scene') {
-        const preset = String(state.preset ?? 'default');
-        app.scene.ambientLight = scenePresets[preset] ?? scenePresets.default;
-        document.documentElement.dataset.scene = preset;
-      } else if (domain === 'animation') {
-        const name = String(state.name ?? '');
-        if (name) status.textContent = state.playing ? 'Animação: ' + name : 'Animação parada: ' + name;
-        document.documentElement.dataset.animation = name;
-      }
-    }
-  } catch {}
-}
-
 async function runAvatarAction(action: string, args: Record<string, unknown> = {}) {
   applyAction(action, args);
   const label = action === 'setExpression' ? `Expressão: ${args.expression}` : action === 'setOutfit' ? `Roupa: ${args.outfit}` : `[${action}]`;
@@ -315,7 +264,5 @@ else { mic.disabled = true; mic.textContent = '◉  Voz indisponível neste nave
 
 health();
 loadCapabilities();
-void syncRuntime();
-window.setInterval(() => { void syncRuntime(); }, 800);
 void syncRuntime();
 window.setInterval(() => { void syncRuntime(); }, 800);

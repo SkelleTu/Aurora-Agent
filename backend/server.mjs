@@ -17,6 +17,7 @@ const provider = createAIProvider();
 const auraBridge = createAuraBridge();
 const aurora = createAuroraCore({ provider, auraBridge });
 const HF_TOKEN = process.env.HF_TOKEN;
+const hf = HF_TOKEN ? new InferenceClient(HF_TOKEN) : null;
 const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
 const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
 const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;

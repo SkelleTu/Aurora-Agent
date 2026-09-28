@@ -6,7 +6,11 @@ export type AgentEventType =
   | 'agent.gaze'
   | 'agent.action'
   | 'avatar.state'
-  | 'system.tool';
+  | 'system.tool'
+  | 'tool.requested'
+  | 'tool.started'
+  | 'tool.completed'
+  | 'tool.failed';
 
 export interface AgentEvent<T = Record<string, unknown>> {
   type: AgentEventType;

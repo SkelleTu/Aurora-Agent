@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { InferenceClient } from '@huggingface/inference';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
+import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES } from './providers/huggingface-capabilities.mjs';
 
 const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -58,11 +59,22 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     if (req.method === 'GET' && req.url === '/health') return json(res, 200, {
-      ok: true, agent: 'aurora', version: '0.6.0', provider: provider.name, model: provider.model,
+      ok: true, agent: 'aurora', version: '0.7.0', provider: provider.name, model: provider.model,
       configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
-      architecture: { reasoning: 'huggingface', voice: 'huggingface', tools: 'aurora-system' },
+      architecture: { reasoning: 'huggingface', capabilities: 'huggingface', voice: 'huggingface', tools: 'aurora-system' },
       voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL },
+      modelProfiles: AURORA_MODEL_PROFILES,
+      capabilities: Object.keys(HUGGING_FACE_TASKS),
     });
+    if (req.method === 'GET' && req.url === '/api/huggingface/models') {
+      if (!provider.listChatModels) return json(res, 501, { error: 'model_catalog_unavailable' });
+      return json(res, 200, await provider.listChatModels());
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/huggingface/hub-models')) {
+      if (!provider.listHubModels) return json(res, 501, { error: 'hub_catalog_unavailable' });
+      const url = new URL(req.url, 'http://localhost');
+      return json(res, 200, await provider.listHubModels({ task: url.searchParams.get('task') || undefined, provider: url.searchParams.get('provider') || 'all', limit: Math.min(Number(url.searchParams.get('limit') || 100), 500) }));
+    }
     if (req.method === 'POST' && req.url === '/api/session') return json(res, 200, { sessionId: crypto.randomUUID(), status: 'ready' });
     if (req.method === 'POST' && req.url === '/api/chat') {
       const body = await readJson(req);

@@ -82,21 +82,6 @@ export class AuroraLiveSession {
 
   wireTranscriber(transcriber) {
     this.transcriber = transcriber;
-    transcriber.on('connected', () => this.emit('input_transcription.connected', { model: transcriber.model || 'gemini-3.5-transcribe-live' }));
-    transcriber.on('interim', ({ text }) => this.emit('conversation.item.input_audio_transcription.delta', { text: String(text || ''), interim: true, replace: true }));
-    transcriber.on('final', ({ text }) => {
-      const value = String(text || '').trim();
-      if (value) {
-        this.emit('conversation.item.input_audio_transcription.completed', { text: value });
-        this.history.push({ role: 'user', content: value });
-      }
-    });
-    transcriber.on('error', ({ error }) => this.emit('error', { error: `Transcription: ${error}` }));
-    transcriber.on('closed', ({ reason }) => { if (!this.closed) this.emit('input_transcription.closed', { reason }); });
-  }
-
-  wireTranscriber(transcriber) {
-    this.transcriber = transcriber;
     transcriber.on('connected', ({ model }) => this.emit('input_transcription.connected', { model }));
     transcriber.on('interim', ({ text }) => this.emit('conversation.item.input_audio_transcription.delta', { text: String(text || ''), interim: true, replace: true }));
     transcriber.on('final', ({ text }) => {

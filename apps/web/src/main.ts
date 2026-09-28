@@ -137,6 +137,7 @@ async function health() {
     const online = Boolean(data.ok);
     connection.textContent = online ? 'Online' : 'Indisponível'; topConnection.textContent = online ? 'Sistema online' : 'Sistema offline';
     backendState.textContent = online ? 'Operacional' : 'Indisponível'; reasoning.textContent = data.provider || '—'; model.textContent = data.model || '—'; modelCompact.textContent = data.model || '—';
+    liveModel.value = liveModel.value || data.model || '';
     voice.textContent = data.voice ? 'Configurada' : 'Não configurada'; voiceModel.textContent = data.voiceModels ? `${data.voiceModels.stt} · ${data.voiceModels.tts}` : 'Modelo de voz não informado'; webState.textContent = data.web ? 'Disponível' : 'Ausente';
     auraBridge.textContent = data.auraBridge?.configured ? 'Configurada' : 'Não configurada';
     status.textContent = online ? 'Aurora System operacional.' : 'Backend indisponível.';

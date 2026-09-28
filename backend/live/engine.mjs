@@ -41,7 +41,26 @@ export class AuroraLiveSession {
   wireRealtimeAdapter(adapter) {
     this.realtimeAdapter = adapter;
     adapter.on('connected', ({ model }) => this.emit('session.updated', { model: model || this.model, language: this.language, nativeAudio: true, transport: 'realtime-model' }));
-    adapter.on('input_transcript_delta', ({ text, final = false, interim = false, replace = false }) => { const value = String(text || ''); if (interim) { this.emit('conversation.item.input_audio_transcription.delta', { text: value, interim: true, replace: true }); } else { this.inputTranscript += value; this.emit('conversation.item.input_audio_transcription.delta', { text: value, final: Boolean(final), replace: Boolean(replace) }); if (final) { this.emit('conversation.item.input_audio_transcription.completed', { text: this.inputTranscript }); this.history.push({ role: 'user', content: this.inputTranscript }); this.inputTranscript = ''; } } });
+    adapter.on('input_transcript_delta', ({ text, final = false, interim = false, replace = false }) => {
+      const value = String(text || '');
+      if (!value) return;
+      if (interim || replace) {
+        this.inputTranscript = value;
+        this.emit('conversation.item.input_audio_transcription.delta', { text: value, interim: Boolean(interim), final: Boolean(final), replace: true });
+        if (!final) return;
+      } else {
+        this.inputTranscript += value;
+        this.emit('conversation.item.input_audio_transcription.delta', { text: value, final: Boolean(final), replace: false });
+      }
+      if (final) {
+        const completed = this.inputTranscript.trim();
+        if (completed) {
+          this.emit('conversation.item.input_audio_transcription.completed', { text: completed });
+          this.history.push({ role: 'user', content: completed });
+        }
+        this.inputTranscript = '';
+      }
+    });
     adapter.on('output_transcript_delta', ({ text }) => { this.outputTranscript += String(text || ''); this.emit('response.audio.transcript.delta', { responseId: this.responseId, delta: String(text || '') }); });
     adapter.on('output_text_delta', ({ text }) => this.emit('response.text.delta', { responseId: this.responseId, delta: String(text || '') }));
     adapter.on('audio_delta', ({ responseId, data, sampleRate = 24000, channels = 1, encoding = 'pcm_s16le' }) => {

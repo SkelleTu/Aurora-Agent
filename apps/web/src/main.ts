@@ -295,150 +295,224 @@ autoSpeak.addEventListener('change', () => { status.textContent = autoSpeak.chec
 language.addEventListener('change', () => { status.textContent = `Idioma: ${language.value}`; if (liveVoiceEnabled && liveRecognition) { liveRecognition.lang = language.value; } });
 form.addEventListener('submit', async (event) => { event.preventDefault(); const text = input.value; input.value = ''; try { await sendMessage(text); } catch (e) { addMessage('assistant', e instanceof Error ? e.message : 'Erro de comunicação.'); } });
 
-const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+const liveState = {
+  enabled: false,
+  connecting: false,
+  peer: null as RTCPeerConnection | null,
+  events: null as RTCDataChannel | null,
+  microphone: null as MediaStream | null,
+  audio: null as HTMLAudioElement | null,
+  sessionId: '',
+  assistantTranscript: '',
+  toolCalls: new Set<string>(),
+};
 
 function setLiveVoiceState(label: string) {
   voiceLiveState.textContent = label;
-  mic.textContent = liveVoiceEnabled ? '■  Encerrar conversa ao vivo' : '◉  Iniciar conversa ao vivo';
+  mic.textContent = liveState.enabled ? '■  Encerrar conversa ao vivo' : '◉  Iniciar conversa ao vivo';
 }
 
-function stopLiveVoice() {
-  liveVoiceEnabled = false;
-  liveVoiceProcessing = false;
-  liveTurnId += 1;
-  if (liveRecognition) {
-    liveRecognition.onend = null;
-    try { liveRecognition.abort(); } catch {}
-    liveRecognition = null;
-  }
-  if (liveMicStream) {
-    liveMicStream.getTracks().forEach((track) => track.stop());
-    liveMicStream = null;
-  }
-  stopCurrentAudio(true);
-  setLiveVoiceState('Conversa ao vivo desligada');
+function sendRealtimeEvent(event: Record<string, unknown>) {
+  if (liveState.events?.readyState === 'open') liveState.events.send(JSON.stringify(event));
 }
 
-function interruptLiveResponse() {
-  if (!liveVoiceProcessing || !currentAudio) return;
-  liveTurnId += 1;
-  liveVoiceProcessing = false;
-  stopCurrentAudio(true);
-  setLiveVoiceState('● Você interrompeu a Aurora — ouvindo…');
-  status.textContent = 'Aurora parou para ouvir você.';
-}
-
-async function handleLiveTurn(text: string) {
-  const turnId = ++liveTurnId;
-  liveVoiceProcessing = true;
-  setLiveVoiceState('◌ Aurora processando…');
+async function executeRealtimeTool(call: any) {
+  const callId = String(call?.call_id || '');
+  if (!callId || liveState.toolCalls.has(callId)) return;
+  liveState.toolCalls.add(callId);
+  let args: Record<string, unknown> = {};
+  try { args = JSON.parse(String(call.arguments || '{}')); } catch { args = {}; }
   try {
-    await sendMessage(text);
+    const r = await fetch('/api/realtime/tool', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: call.name, args }),
+    });
+    const result = await r.json().catch(() => ({ ok: false, error: 'invalid_tool_response' }));
+    sendRealtimeEvent({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: JSON.stringify(result),
+      },
+    });
+    sendRealtimeEvent({ type: 'response.create' });
   } catch (error) {
-    addMessage('assistant', error instanceof Error ? error.message : 'Erro de comunicação.');
-  } finally {
-    if (turnId !== liveTurnId || !liveVoiceEnabled) return;
-    liveVoiceProcessing = false;
-    setLiveVoiceState('● Ouvindo em tempo real…');
+    sendRealtimeEvent({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'Tool execution failed' }),
+      },
+    });
+    sendRealtimeEvent({ type: 'response.create' });
   }
+}
+
+function handleRealtimeEvent(event: any) {
+  switch (event?.type) {
+    case 'session.created':
+    case 'session.updated':
+      liveState.connecting = false;
+      setLiveVoiceState('● Ouvindo em tempo real…');
+      status.textContent = 'Aurora Live conectada.';
+      break;
+    case 'input_audio_buffer.speech_started':
+      setLiveVoiceState('● Você está falando…');
+      status.textContent = 'Aurora ouvindo você.';
+      break;
+    case 'input_audio_buffer.speech_stopped':
+      setLiveVoiceState('◌ Aurora pensando…');
+      break;
+    case 'response.created':
+      setLiveVoiceState('◌ Aurora falando…');
+      break;
+    case 'response.output_audio_transcript.delta':
+      liveState.assistantTranscript += String(event.delta || '');
+      break;
+    case 'response.output_audio_transcript.done':
+      if (liveState.assistantTranscript.trim()) {
+        addMessage('assistant', liveState.assistantTranscript.trim());
+        liveState.assistantTranscript = '';
+      }
+      break;
+    case 'response.output_item.done':
+      if (event.item?.type === 'function_call') void executeRealtimeTool(event.item);
+      break;
+    case 'response.done':
+      if (event.response?.status === 'failed') {
+        const detail = event.response?.status_details?.error?.message || 'A resposta Live falhou.';
+        status.textContent = detail;
+      } else if (liveState.enabled) {
+        setLiveVoiceState('● Ouvindo em tempo real…');
+      }
+      break;
+    case 'error':
+      status.textContent = event.error?.message || 'Erro na sessão Aurora Live.';
+      break;
+  }
+}
+
+async function stopLiveVoice() {
+  if (!liveState.enabled && !liveState.peer) return;
+  liveState.enabled = false;
+  setLiveVoiceState('Encerrando conversa ao vivo…');
+  if (liveState.events?.readyState === 'open') sendRealtimeEvent({ type: 'session.close' });
+  const peer = liveState.peer;
+  const microphone = liveState.microphone;
+  window.setTimeout(() => {
+    try { peer?.close(); } catch {}
+    microphone?.getTracks().forEach((track) => track.stop());
+    if (liveState.audio) {
+      liveState.audio.pause();
+      liveState.audio.srcObject = null;
+    }
+    liveState.peer = null;
+    liveState.events = null;
+    liveState.microphone = null;
+    liveState.audio = null;
+    liveState.sessionId = '';
+    liveState.assistantTranscript = '';
+    liveState.toolCalls.clear();
+    setLiveVoiceState('Conversa ao vivo desligada');
+    status.textContent = 'Aurora Live encerrada.';
+  }, 500);
 }
 
 async function startLiveVoice() {
-  if (!SpeechRecognition) return;
-  if (liveVoiceEnabled) return;
-  liveVoiceEnabled = true;
-  liveVoiceProcessing = false;
-
-  if (navigator.mediaDevices?.getUserMedia) {
-    try {
-      liveMicStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-    } catch {
-      stopLiveVoice();
-      setLiveVoiceState('Permissão de microfone necessária');
-      return;
-    }
+  if (liveState.enabled || liveState.connecting) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
+    setLiveVoiceState('WebRTC de voz não disponível neste navegador');
+    return;
   }
-
-  const recognition = new SpeechRecognition();
-  liveRecognition = recognition;
-  recognition.lang = language.value;
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-
-  const startRecognition = () => {
-    if (!liveVoiceEnabled || liveRecognition !== recognition) return;
-    try {
-      recognition.start();
-    } catch {}
-  };
-
-  recognition.onstart = () => setLiveVoiceState(liveVoiceProcessing ? '◌ Aurora falando — pode interromper' : '● Ouvindo em tempo real…');
-
-  recognition.onresult = (event: any) => {
-    let finalText = '';
-    let interimText = '';
-    for (let i = event.resultIndex; i < event.results.length; i += 1) {
-      const transcript = String(event.results[i][0]?.transcript ?? '').trim();
-      if (event.results[i].isFinal) finalText += transcript + ' ';
-      else interimText += transcript + ' ';
-    }
-
-    const spokenText = (finalText || interimText).trim();
-
-    // Barge-in: enquanto a Aurora estiver falando, uma nova fala detectada
-    // interrompe o áudio atual e vira o próximo turno da conversa.
-    if (liveVoiceProcessing && currentAudio && spokenText.length >= 2) {
-      interruptLiveResponse();
-      try { recognition.abort(); } catch {}
-      void handleLiveTurn(spokenText);
+  liveState.enabled = true;
+  liveState.connecting = true;
+  setLiveVoiceState('● Conectando Aurora Live…');
+  try {
+    const microphone = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    if (!liveState.enabled) {
+      microphone.getTracks().forEach((track) => track.stop());
       return;
     }
+    liveState.microphone = microphone;
 
-    if (interimText && !liveVoiceProcessing) {
-      status.textContent = 'Ouvindo: ' + interimText.trim();
-    }
+    const tokenResponse = await fetch('/api/realtime/token', { method: 'POST', cache: 'no-store' });
+    const tokenData = await tokenResponse.json().catch(() => ({}));
+    if (!tokenResponse.ok || !tokenData.value) throw new Error(tokenData.message || 'Aurora Live não está configurada no servidor.');
 
-    if (!finalText.trim() || liveVoiceProcessing) return;
-    void handleLiveTurn(finalText.trim());
-  };
+    const peer = new RTCPeerConnection();
+    liveState.peer = peer;
+    const audio = new Audio();
+    audio.autoplay = true;
+    audio.setAttribute('playsinline', 'true');
+    liveState.audio = audio;
+    peer.ontrack = (event) => {
+      const stream = event.streams[0] || new MediaStream([event.track]);
+      audio.srcObject = stream;
+      void audio.play().catch(() => {});
+    };
+    microphone.getTracks().forEach((track) => peer.addTrack(track, microphone));
 
-  recognition.onerror = (event: any) => {
-    if (!liveVoiceEnabled) return;
-    if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
-      stopLiveVoice();
-      setLiveVoiceState('Permissão de microfone necessária');
-      return;
-    }
-    setLiveVoiceState(liveVoiceProcessing ? '◌ Aurora falando — ouvindo interrupções…' : '● Reconectando escuta…');
-  };
+    const events = peer.createDataChannel('oai-events');
+    liveState.events = events;
+    events.onmessage = (message) => {
+      try { handleRealtimeEvent(JSON.parse(message.data)); } catch {}
+    };
+    events.onopen = () => {
+      setLiveVoiceState('● Ouvindo em tempo real…');
+      status.textContent = 'Aurora Live pronta.';
+    };
+    events.onerror = () => { status.textContent = 'Canal de eventos Aurora Live apresentou um erro.'; };
+    events.onclose = () => {
+      if (liveState.enabled) {
+        status.textContent = 'Conexão Aurora Live encerrada.';
+        liveState.enabled = false;
+        setLiveVoiceState('Conversa ao vivo desligada');
+      }
+    };
+    peer.onconnectionstatechange = () => {
+      const state = peer.connectionState;
+      if (state === 'connected') {
+        liveState.connecting = false;
+        setLiveVoiceState('● Ouvindo em tempo real…');
+      } else if (state === 'failed' || state === 'closed') {
+        if (liveState.enabled) void stopLiveVoice();
+      }
+    };
 
-  recognition.onend = () => {
-    if (!liveVoiceEnabled) return;
-    setLiveVoiceState(liveVoiceProcessing ? '◌ Aurora falando — ouvindo interrupções…' : '● Reconectando escuta…');
-    window.setTimeout(startRecognition, 50);
-  };
-
-  startRecognition();
-  setLiveVoiceState('● Conectando microfone…');
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + tokenData.value, 'content-type': 'application/sdp' },
+      body: offer.sdp,
+    });
+    const answerSdp = await sdpResponse.text();
+    if (!sdpResponse.ok) throw new Error(answerSdp || 'Falha ao conectar ao OpenAI Realtime.');
+    await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    liveState.sessionId = sdpResponse.headers.get('Location') || '';
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Falha ao iniciar Aurora Live.';
+    status.textContent = message;
+    liveState.enabled = false;
+    liveState.connecting = false;
+    try { liveState.peer?.close(); } catch {}
+    liveState.microphone?.getTracks().forEach((track) => track.stop());
+    liveState.peer = null;
+    liveState.events = null;
+    liveState.microphone = null;
+    setLiveVoiceState('Falha ao iniciar conversa ao vivo');
+  }
 }
 
-if (SpeechRecognition) {
-  mic.addEventListener('click', () => {
-    if (liveVoiceEnabled) stopLiveVoice();
-    else void startLiveVoice();
-  });
-} else {
-  mic.disabled = true;
-  mic.textContent = '◉  Voz indisponível neste navegador';
-  setLiveVoiceState('Este navegador não oferece reconhecimento de voz contínuo');
-}
+mic.addEventListener('click', () => {
+  if (liveState.enabled || liveState.connecting) void stopLiveVoice();
+  else void startLiveVoice();
+});
 
 health();
 loadCapabilities();

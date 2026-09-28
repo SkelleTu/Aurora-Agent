@@ -58,7 +58,7 @@ export function createHuggingFaceProvider(config = {}) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split(/\\r?\\n/);
+          const lines = buffer.split('\n');
           buffer = lines.pop() || '';
           for (const line of lines) {
             const trimmed = line.trim();

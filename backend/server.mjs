@@ -143,4 +143,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, 500, { error: 'aurora_request_failed', message: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
-server.listen(port, '0.0.0.0', () => console.log(`Aurora backend listening on port ${port}`));
+server.listen(port, '0.0.0.0', () => {
+  console.log(`Aurora backend listening on port ${port}`);
+  if (auraBridge.configured) {
+    void auraBridge.health()
+      .then((result) => console.log('Aura System bridge health:', JSON.stringify(result)))
+      .catch((error) => console.error('Aura System bridge health failed:', error));
+  }
+});

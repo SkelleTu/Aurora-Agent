@@ -27,7 +27,7 @@ root.innerHTML = `
         <button id="menu" class="icon-button" aria-label="Expandir controles">☰</button>
       </header>
       <nav class="tabs" aria-label="Controles Aurora">
-        <button class="tab active" data-tab="chat">Conversa</button><button class="tab" data-tab="avatar">Avatar</button><button class="tab" data-tab="voice">Voz</button><button class="tab" data-tab="system">Sistema</button>
+        <button class="tab active" data-tab="chat">Conversa</button><button class="tab" data-tab="avatar">Avatar</button><button class="tab" data-tab="voice">Voz</button><button class="tab" data-tab="ai">IA</button><button class="tab" data-tab="system">Sistema</button>
       </nav>
 
       <section class="tab-panel active" data-panel="chat">
@@ -42,7 +42,7 @@ root.innerHTML = `
         <div class="control-grid"><button data-action="look"><b>◉</b><span>Olhar</span></button><button data-action="walk"><b>↗</b><span>Caminhar</span></button><button data-action="sit"><b>▰</b><span>Sentar</span></button><button data-action="gesture"><b>✦</b><span>Gesto</span></button><button data-action="speak"><b>◖</b><span>Falar</span></button></div>
         <label>Expressão<select id="expression"><option value="neutral">Neutra</option><option value="happy">Feliz</option><option value="sad">Triste</option><option value="surprised">Surpresa</option></select></label>
         <label>Roupa<select id="outfit"><option value="default">Padrão</option><option value="casual">Casual</option><option value="formal">Formal</option><option value="sport">Esporte</option></select></label>
-        <div class="capability-note"><span>✦</span><div><strong>Camada de controle</strong><small>Ações são enviadas ao protocolo do agente quando suportadas pelo backend.</small></div></div>
+        <div class="capability-note"><span>✦</span><div><strong>Camada de controle</strong><small>Ações são despachadas pelo bridge autorizado do Aura System.</small></div></div>
       </section>
 
       <section class="tab-panel" data-panel="voice">
@@ -53,14 +53,20 @@ root.innerHTML = `
         <button id="testVoice" class="wide primary" type="button">▶ &nbsp; Testar voz</button>
       </section>
 
-      <section class="tab-panel" data-panel="system">
-        <div class="panel-title"><div><span class="section-kicker">RUNTIME</span><h3>Estado do sistema</h3></div></div>
-        <div class="system-list"><div><span>Backend</span><strong id="backendState">—</strong></div><div><span>Provedor</span><strong id="provider">—</strong></div><div><span>Modelo</span><strong id="model">—</strong></div><div><span>Web build</span><strong id="webState">—</strong></div></div>
-        <button id="refresh" class="wide secondary" type="button">↻ &nbsp; Atualizar diagnóstico</button>
-        <div class="architecture"><span>ARQUITETURA</span><p>Reasoning · Voice · Tools</p><small>Adapters mantêm os provedores substituíveis e as ações passam pelo protocolo autorizado.</small></div>
+      <section class="tab-panel" data-panel="ai">
+        <div class="panel-title"><div><span class="section-kicker">AI FABRIC</span><h3>Capacidades</h3></div></div>
+        <div class="system-list" id="capabilityList"><div><span>Catálogo</span><strong>Carregando…</strong></div></div>
+        <div class="architecture"><span>HUGGING FACE</span><p id="capabilitySummary">Descobrindo adapters…</p><small>Reasoning, visão, áudio, classificação, geração e vídeo ficam disponíveis pela mesma camada de adapters.</small></div>
       </section>
 
-      <footer class="panel-footer"><span>v0.1.0 · Aurora Agent</span><span>● SECURE TOOLING</span></footer>
+      <section class="tab-panel" data-panel="system">
+        <div class="panel-title"><div><span class="section-kicker">RUNTIME</span><h3>Estado do sistema</h3></div></div>
+        <div class="system-list"><div><span>Backend</span><strong id="backendState">—</strong></div><div><span>Provedor</span><strong id="provider">—</strong></div><div><span>Modelo</span><strong id="model">—</strong></div><div><span>Web build</span><strong id="webState">—</strong></div><div><span>Aura bridge</span><strong id="auraBridge">—</strong></div></div>
+        <button id="refresh" class="wide secondary" type="button">↻ &nbsp; Atualizar diagnóstico</button>
+        <div class="architecture"><span>ARQUITETURA</span><p>Reasoning · Voice · Tools · Aura Bridge</p><small>Adapters mantêm os provedores substituíveis e as ações passam pelo protocolo autorizado.</small></div>
+      </section>
+
+      <footer class="panel-footer"><span>v0.8.0 · Aurora Agent</span><span>● SECURE TOOLING</span></footer>
     </aside>
   </main>`;
 
@@ -75,6 +81,9 @@ const backendState = document.querySelector<HTMLElement>('#backendState')!;
 const model = document.querySelector<HTMLElement>('#model')!;
 const modelCompact = document.querySelector<HTMLElement>('#modelCompact')!;
 const webState = document.querySelector<HTMLElement>('#webState')!;
+const auraBridge = document.querySelector<HTMLElement>('#auraBridge')!;
+const capabilityList = document.querySelector<HTMLElement>('#capabilityList')!;
+const capabilitySummary = document.querySelector<HTMLElement>('#capabilitySummary')!;
 const chat = document.querySelector<HTMLDivElement>('#chat')!;
 const form = document.querySelector<HTMLFormElement>('#chatForm')!;
 const input = document.querySelector<HTMLInputElement>('#message')!;
@@ -98,8 +107,22 @@ async function health() {
     connection.textContent = online ? 'Online' : 'Indisponível'; topConnection.textContent = online ? 'Sistema online' : 'Sistema offline';
     backendState.textContent = online ? 'Operacional' : 'Indisponível'; reasoning.textContent = data.provider || '—'; model.textContent = data.model || '—'; modelCompact.textContent = data.model || '—';
     voice.textContent = data.voice ? 'Configurada' : 'Não configurada'; voiceModel.textContent = data.voiceModels ? `${data.voiceModels.stt} · ${data.voiceModels.tts}` : 'Modelo de voz não informado'; webState.textContent = data.web ? 'Disponível' : 'Ausente';
+    auraBridge.textContent = data.auraBridge?.configured ? 'Configurada' : 'Não configurada';
     status.textContent = online ? 'Aurora System operacional.' : 'Backend indisponível.';
-  } catch { connection.textContent = 'Offline'; topConnection.textContent = 'Sistema offline'; backendState.textContent = 'Offline'; status.textContent = 'Não foi possível conectar ao backend.'; }
+  } catch { connection.textContent = 'Offline'; topConnection.textContent = 'Sistema offline'; backendState.textContent = 'Offline'; auraBridge.textContent = 'Indisponível'; status.textContent = 'Não foi possível conectar ao backend.'; }
+}
+
+async function loadCapabilities() {
+  try {
+    const r = await fetch('/api/capabilities', { cache: 'no-store' });
+    const data = await r.json();
+    const capabilities = Array.isArray(data.capabilities) ? data.capabilities : [];
+    capabilityList.innerHTML = capabilities.map((item: any) => `<div><span>${item.task}</span><strong>${item.model || 'dinâmico'}</strong></div>`).join('');
+    capabilitySummary.textContent = `${capabilities.length} adapters ativos · ${data.groups?.length || 0} grupos`;
+  } catch {
+    capabilityList.innerHTML = '<div><span>Catálogo</span><strong>Indisponível</strong></div>';
+    capabilitySummary.textContent = 'Falha ao consultar adapters.';
+  }
 }
 
 async function speak(text: string) { if (!autoSpeak.checked || !text.trim()) return; try { const t = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); if (t.ok) new Audio(URL.createObjectURL(await t.blob())).play(); } catch {} }
@@ -111,13 +134,21 @@ function applyAction(action: string, args: Record<string, unknown> = {}) {
   else status.textContent = labels[action] || `Ação: ${action}`;
 }
 
+async function dispatchAction(domain: string, action: string, args: Record<string, unknown> = {}) {
+  const r = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ domain, action, args }) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.reason || data.error || `Falha ao executar ${action}`);
+  return data;
+}
+
 async function sendMessage(text: string) {
   if (!text.trim()) return; addMessage('user', text); input.disabled = true;
   try {
     const r = await fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, message: text }) });
     const data = await r.json(); sessionId = data.sessionId ?? sessionId;
     if (!r.ok) throw new Error(data.message || 'Falha no agente'); addMessage('assistant', data.message || '');
-    for (const action of data.actions ?? []) applyAction(action.action, action.args); await speak(data.message || '');
+    for (const action of data.actions ?? []) applyAction(action.action, action.args);
+    await speak(data.message || '');
   } finally { input.disabled = false; input.focus(); }
 }
 
@@ -125,6 +156,13 @@ async function runAvatarAction(action: string, args: Record<string, unknown> = {
   applyAction(action, args);
   const label = action === 'setExpression' ? `Expressão: ${args.expression}` : action === 'setOutfit' ? `Roupa: ${args.outfit}` : `[${action}]`;
   addMessage('user', label);
+  try {
+    const result = await dispatchAction('avatar', action, args);
+    if (result.dispatched) status.textContent = `Aura: ${action} executado.`;
+    else status.textContent = `Aurora: ${action} preparado, mas o bridge do Aura System ainda não está configurado.`;
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : 'Falha ao despachar ação.';
+  }
 }
 
 document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((button) => button.addEventListener('click', () => runAvatarAction(button.dataset.action!)));
@@ -143,3 +181,4 @@ if (SpeechRecognition) { mic.addEventListener('click', () => { const recognition
 else { mic.disabled = true; mic.textContent = '◉  Voz indisponível neste navegador'; }
 
 health();
+loadCapabilities();

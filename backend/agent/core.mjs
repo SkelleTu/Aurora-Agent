@@ -1,23 +1,26 @@
 import { randomUUID } from 'node:crypto';
+import { listAuroraCapabilities } from '../providers/huggingface-capabilities.mjs';
 
 const SYSTEM_PROMPT = `You are Aurora, the intelligent agent of Aura System.
-You are a helpful, warm, concise AI companion and the orchestration layer for Aura System.
-Use authorized tools for Aura System actions and Hugging Face capabilities instead of inventing action JSON in normal text.
-Never claim an external action succeeded unless the tool result confirms it.`;
+You are the orchestration layer for Aura System. Use authorized Aura actions and Hugging Face capabilities instead of inventing action JSON in normal text.
+Select the most appropriate Hugging Face capability/model for the requested operation when one is available.
+Never claim an external Aura action or model inference succeeded unless the tool result confirms it.
+Keep the user-facing response concise while preserving important failures and limitations.`;
 
 const AURORA_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'avatar_action',
-      description: 'Request an authorized action for Aurora\'s 3D avatar.',
+      name: 'aura_action',
+      description: 'Dispatch an authorized operation to Aura System. Use this for avatar, scene, memory, voice, animation, clothing, media, project, game, automation, settings, integration, or system operations.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['look', 'walk', 'sit', 'gesture', 'speak', 'setOutfit', 'setExpression'] },
+          domain: { type: 'string', enum: ['avatar', 'scene', 'memory', 'voice', 'animation', 'clothing', 'media', 'project', 'game', 'automation', 'settings', 'integration', 'system'] },
+          action: { type: 'string' },
           args: { type: 'object', additionalProperties: true },
         },
-        required: ['action', 'args'],
+        required: ['domain', 'action', 'args'],
         additionalProperties: false,
       },
     },
@@ -26,11 +29,11 @@ const AURORA_TOOLS = [
     type: 'function',
     function: {
       name: 'hf_capability',
-      description: 'Use a Hugging Face model selected by Aurora capability, such as vision, embeddings, speechToText, textToSpeech, textToImage or textToVideo.',
+      description: 'Run a Hugging Face capability through the provider adapter. A model may be selected explicitly when the user or task requires it.',
       parameters: {
         type: 'object',
         properties: {
-          task: { type: 'string', enum: ['reasoning', 'vision', 'embeddings', 'semanticSimilarity', 'textGeneration', 'translation', 'classification', 'zeroShotClassification', 'entityExtraction', 'speechToText', 'textToSpeech', 'textToAudio', 'imageUnderstanding', 'imageQuestionAnswering', 'imageClassification', 'objectDetection', 'imageSegmentation', 'textToImage', 'imageToImage', 'textToVideo', 'imageToVideo', 'imageTextToImage', 'imageTextToVideo'] },
+          task: { type: 'string', enum: Object.keys(listAuroraCapabilities()) },
           args: { type: 'object', additionalProperties: true },
           model: { type: 'string' },
         },
@@ -48,7 +51,7 @@ function summarizeToolResult(value) {
   try { return JSON.parse(JSON.stringify(value)); } catch { return { type: typeof value }; }
 }
 
-export function createAuroraCore({ provider }) {
+export function createAuroraCore({ provider, auraBridge = null }) {
   const sessions = new Map();
 
   function getSession(sessionId) {
@@ -69,7 +72,6 @@ export function createAuroraCore({ provider }) {
     const actions = [];
     const toolResults = [];
     const toolCalls = assistantMessage.tool_calls ?? [];
-
     history.push({ role: 'assistant', content: assistantMessage.content ?? '', ...(toolCalls.length ? { tool_calls: toolCalls } : {}) });
 
     for (const call of toolCalls) {
@@ -77,20 +79,25 @@ export function createAuroraCore({ provider }) {
       let input;
       try { input = JSON.parse(call.function.arguments || '{}'); } catch { continue; }
 
-      if (name === 'avatar_action' && input.action && typeof input.args === 'object') {
-        const action = { id: randomUUID(), action: input.action, args: input.args };
-        actions.push(action);
-        toolResults.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: true, action }) });
+      if (name === 'aura_action' && input.domain && input.action && typeof input.args === 'object') {
+        try {
+          const result = auraBridge ? await auraBridge.dispatch({ domain: input.domain, action: input.action, args: input.args, signal }) : { ok: false, dispatched: false, reason: 'Aura bridge is not configured.' };
+          const action = { id: randomUUID(), domain: input.domain, action: input.action, args: input.args, result: summarizeToolResult(result) };
+          actions.push(action);
+          toolResults.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+        } catch (error) {
+          toolResults.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: false, domain: input.domain, action: input.action, error: error instanceof Error ? error.message : 'Unknown error' }) });
+        }
         continue;
       }
 
       if (name === 'hf_capability' && input.task && typeof input.args === 'object') {
         try {
-          const result = await provider.runTask(input.task, input.args, { model: input.model });
+          const result = await provider.runTask(input.task, input.args, { model: input.model, signal });
           const summary = summarizeToolResult(result);
           toolResults.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: true, task: input.task, model: input.model ?? null, result: summary }) });
         } catch (error) {
-          toolResults.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: false, task: input.task, error: error instanceof Error ? error.message : 'Unknown error' }) });
+          toolResults.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: false, task: input.task, model: input.model ?? null, error: error instanceof Error ? error.message : 'Unknown error' }) });
         }
       }
     }

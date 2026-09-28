@@ -96,7 +96,16 @@ app.setCanvasFillMode(FILLMODE_FILL_WINDOW); app.setCanvasResolution(RESOLUTION_
 app.scene.ambientLight = new Color(0.08, 0.1, 0.16);
 status.textContent = '3D engine pronto. Conectando ao agente…';
 
-let sessionId = crypto.randomUUID();
+let sessionId = '';
+
+async function ensureSession() {
+  if (sessionId) return sessionId;
+  const r = await fetch('/api/session', { method: 'POST', cache: 'no-store' });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.sessionId) throw new Error(data.message || 'Não foi possível iniciar a sessão Aurora.');
+  sessionId = data.sessionId;
+  return sessionId;
+}
 function clearEmpty() { chat.querySelector('.empty-chat')?.remove(); }
 function addMessage(who: 'user' | 'assistant', text: string) { clearEmpty(); const el = document.createElement('div'); el.className = `msg ${who}`; el.innerHTML = `<span>${who === 'user' ? 'VOCÊ' : 'AURORA'}</span><p></p>`; el.querySelector('p')!.textContent = text; chat.append(el); chat.scrollTop = chat.scrollHeight; }
 
@@ -143,12 +152,20 @@ async function dispatchAction(domain: string, action: string, args: Record<strin
 
 async function sendMessage(text: string) {
   if (!text.trim()) return; addMessage('user', text); input.disabled = true;
+  status.textContent = 'Aurora processando…';
   try {
+    await ensureSession();
     const r = await fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, message: text }) });
-    const data = await r.json(); sessionId = data.sessionId ?? sessionId;
-    if (!r.ok) throw new Error(data.message || 'Falha no agente'); addMessage('assistant', data.message || '');
+    const data = await r.json().catch(() => ({}));
+    sessionId = data.sessionId ?? sessionId;
+    if (!r.ok) throw new Error(data.message || data.error || `Falha no agente (${r.status})`);
+    addMessage('assistant', data.message || '');
     for (const action of data.actions ?? []) applyAction(action.action, action.args);
+    status.textContent = data.tools ? `Aurora respondeu · ${data.tools} ferramenta(s)` : 'Aurora respondeu.';
     await speak(data.message || '');
+  } catch (error) {
+    status.textContent = 'Falha no fluxo Aurora.';
+    throw error;
   } finally { input.disabled = false; input.focus(); }
 }
 

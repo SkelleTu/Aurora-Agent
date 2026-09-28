@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { InferenceClient } from '@huggingface/inference';
 import { WebSocketServer } from 'ws';
 import { AuroraLiveSession } from './live/engine.mjs';
+import { GeminiLiveAdapter } from './live/gemini-live.mjs';
 import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
@@ -20,6 +21,9 @@ const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
 const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'espnet/kan-bayashi_ljspeech_vits';
 const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;
 const LIVE_LANGUAGE = process.env.AURORA_LIVE_LANGUAGE || 'pt-BR';
+const LIVE_PROVIDER = String(process.env.AURORA_LIVE_PROVIDER || 'huggingface').toLowerCase();
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
+const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'gemini-3.8-live';
 
 function wavDurationMs(buffer) {
   try {
@@ -106,7 +110,7 @@ const server = http.createServer(async (req, res) => {
       ok: true, agent: 'aurora', version: '0.9.0', provider: provider.name, model: provider.model,
       configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
       auraBridge: { configured: auraBridge.configured },
-      live: { configured: Boolean(HF_TOKEN), transport: 'websocket', vad: 'client_energy', model: provider.model, language: LIVE_LANGUAGE },
+      live: { configured: LIVE_PROVIDER === 'gemini' ? Boolean(GOOGLE_API_KEY) : Boolean(HF_TOKEN), provider: LIVE_PROVIDER, transport: 'websocket', vad: LIVE_PROVIDER === 'gemini' ? 'provider_realtime' : 'client_energy', model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, nativeAudio: LIVE_PROVIDER === 'gemini', language: LIVE_LANGUAGE },
       architecture: { reasoning: 'huggingface', capabilities: 'huggingface-adapters', voice: 'huggingface', tools: 'aura-system-bridge' },
       voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL }, modelProfiles: AURORA_MODEL_PROFILES,
       capabilities: Object.keys(HUGGING_FACE_TASKS),
@@ -159,6 +163,7 @@ const liveWss = new WebSocketServer({ server, path: '/api/live' });
 liveWss.on('connection', (socket) => {
   const live = new AuroraLiveSession({
     provider,
+    realtimeAdapterFactory: liveAdapterFactory,
     auraBridge,
     sessionId: crypto.randomUUID(),
     model: provider.model,
@@ -176,13 +181,16 @@ liveWss.on('connection', (socket) => {
     },
     send: (event) => { if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });
-  live.configure({ language: LIVE_LANGUAGE, model: provider.model });
+  const liveAdapterFactory = LIVE_PROVIDER === 'gemini'
+    ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge })
+    : null;
+  void live.configure({ language: LIVE_LANGUAGE, model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, ...(liveAdapterFactory ? { realtimeAdapterFactory: liveAdapterFactory } : {}) });
   socket.on('message', (raw, isBinary) => {
     try {
       if (isBinary) return live.audio(Buffer.from(raw));
       const event = JSON.parse(String(raw));
       switch (event.type) {
-        case 'session.configure': live.configure(event); break;
+        case 'session.configure': void live.configure(event).catch((error) => { if (socket.readyState === 1) socket.send(JSON.stringify({ type:'error', error:error instanceof Error ? error.message : String(error) })); }); break;
         case 'input_audio_buffer.append': live.audio(Buffer.from(String(event.data || ''), 'base64')); break;
         case 'input_audio_buffer.speech_started': live.speechStarted(); break;
         case 'input_audio_buffer.speech_stopped':

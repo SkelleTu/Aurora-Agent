@@ -1,11 +1,16 @@
 export type ToolEffect = 'read' | 'write' | 'execute' | 'destructive';
 
+export type OperatorMode = 'supreme' | 'moderate';
+export type ToolTarget = 'universal' | 'aura';
+
 export interface ToolRequest {
   id: string;
   tool: string;
   effect: ToolEffect;
   args: Record<string, unknown>;
   source: 'aurora';
+  mode?: OperatorMode;
+  target?: ToolTarget;
   traceId?: string;
   sessionId?: string;
   requestedAt: string;

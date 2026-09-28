@@ -16,8 +16,7 @@
   "dependencies": {
     "@huggingface/inference": "^4.13.0",
     "playcanvas": "^2.22.4",
-    "ws": "^8.18.3",
-    "google-translate-tts": "^0.4.0-dev"
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

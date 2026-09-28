@@ -11,6 +11,7 @@ import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
 import { createAuraBridge } from './aurora/bridge.mjs';
+import googleTts from 'google-translate-tts';
 
 const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -23,6 +24,7 @@ const HF_STT_MODEL = process.env.HF_STT_MODEL ?? 'openai/whisper-large-v3';
 const HF_TTS_MODEL = process.env.HF_TTS_MODEL ?? 'facebook/mms-tts-por';
 const HF_TTS_FALLBACK_MODEL = process.env.HF_TTS_FALLBACK_MODEL || 'facebook/mms-tts-por';
 const HF_TTS_PROVIDER = process.env.HF_TTS_PROVIDER || undefined;
+const GOOGLE_TTS_VOICE = process.env.GOOGLE_TTS_VOICE || 'pt-BR';
 const LIVE_LANGUAGE = process.env.AURORA_LIVE_LANGUAGE || 'pt-BR';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
 const LIVE_PROVIDER = String(process.env.AURORA_LIVE_PROVIDER || (GOOGLE_API_KEY ? 'gemini' : 'huggingface')).toLowerCase();
@@ -84,20 +86,32 @@ async function transcribe(req) {
   return { text: result.text ?? '', model: HF_STT_MODEL };
 }
 
-async function synthesize(text) {
-  requireHF();
-  const models = [...new Set([HF_TTS_MODEL, HF_TTS_FALLBACK_MODEL].filter(Boolean))];
+async function synthesize(text, signal) {
+  const value = String(text || '').trim();
+  if (!value) throw new Error('TTS text is empty');
   let lastError = null;
-  for (const model of models) {
-    try {
-      const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER } : undefined;
-      const audio = await hf.textToSpeech({ model, inputs: text }, options);
-      const buffer = Buffer.from(await audio.arrayBuffer());
-      if (!buffer.length) throw new Error('TTS returned empty audio');
-      return { buffer, contentType: audio.type || 'audio/wav', model, durationMs: wavDurationMs(buffer) };
-    } catch (error) { lastError = error; }
+  if (hf) {
+    const models = [...new Set([HF_TTS_MODEL, HF_TTS_FALLBACK_MODEL].filter(Boolean))];
+    for (const model of models) {
+      try {
+        if (signal?.aborted) throw new Error('TTS request aborted');
+        const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER, signal } : { signal };
+        const audio = await hf.textToSpeech({ model, inputs: value }, options);
+        const buffer = Buffer.from(await audio.arrayBuffer());
+        if (!buffer.length) throw new Error('TTS returned empty audio');
+        return { buffer, contentType: audio.type || 'audio/wav', model, durationMs: wavDurationMs(buffer), engine: 'huggingface' };
+      } catch (error) { lastError = error; }
+    }
   }
-  throw new Error(`TTS unavailable: ${lastError?.message || 'no provider/model available'}`);
+  try {
+    if (signal?.aborted) throw new Error('TTS request aborted');
+    const buffer = await googleTts.synthesize({ text: value, voice: GOOGLE_TTS_VOICE, slow: false });
+    if (!buffer?.length) throw new Error('Google TTS returned empty audio');
+    return { buffer: Buffer.from(buffer), contentType: 'audio/mpeg', model: 'google-translate-tts', durationMs: 0, engine: 'google-translate' };
+  } catch (error) {
+    lastError = error;
+  }
+  throw new Error(`TTS unavailable: ${lastError?.message || 'all configured engines failed'}`);
 }
 
 function serveWeb(req, res) {
@@ -165,7 +179,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/transcribe') return json(res, 200, await transcribe(req));
     if (req.method === 'POST' && requestUrl.pathname === '/api/tts') {
-      const body = await readJson(req); const audio = await synthesize(String(body.text ?? '').trim());
+      const body = await readJson(req); const audio = await synthesize(String(body.text ?? '').trim(), req.signal);
       res.writeHead(200, { 'content-type': audio.contentType, 'cache-control': 'no-store', 'x-aurora-model': audio.model }); return res.end(audio.buffer);
     }
     if (req.method === 'GET') return serveWeb(req, res);
@@ -186,7 +200,7 @@ liveWss.on('connection', (socket) => {
     provider, realtimeAdapterFactory: liveAdapterFactory, auraBridge, sessionId,
     model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model,
     transcribe: async (pcm, signal) => { requireHF(); const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: pcm }, { signal }); return { text: result.text ?? '', model: HF_STT_MODEL }; },
-    synthesize: async (text, signal) => { requireHF(); const models = [...new Set([HF_TTS_MODEL, HF_TTS_FALLBACK_MODEL].filter(Boolean))]; let lastError = null; for (const model of models) { try { const options = HF_TTS_PROVIDER ? { provider: HF_TTS_PROVIDER, signal } : { signal }; const audio = await hf.textToSpeech({ model, inputs: text }, options); const buffer = Buffer.from(await audio.arrayBuffer()); if (!buffer.length) throw new Error('TTS returned empty audio'); return { buffer, contentType: audio.type || 'audio/wav', durationMs: wavDurationMs(buffer), model }; } catch (error) { lastError = error; } } throw new Error(`TTS unavailable: ${lastError?.message || 'no provider/model available'}`); },
+    synthesize: async (text, signal) => synthesize(text, signal),
     send: (event) => { recordLiveTelemetry(event.type, sessionId, event); if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });
   socket.on('message', (raw, isBinary) => {

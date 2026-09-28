@@ -415,7 +415,9 @@ function scheduleLivePcm(event: any) {
 }
 
 function interruptLiveOutput() {
-  const currentMs = liveState.currentPlayback ? Math.round(liveState.currentPlayback.audio.currentTime * 1000) : 0;
+  const pcmMs = liveState.audioContext && liveState.pcmStartAt ? Math.max(0, Math.min((liveState.pcmNextAt - liveState.pcmStartAt) * 1000, (liveState.audioContext.currentTime - liveState.pcmStartAt) * 1000)) : 0;
+  const htmlMs = liveState.currentPlayback ? Math.round(liveState.currentPlayback.audio.currentTime * 1000) : 0;
+  const currentMs = Math.max(pcmMs, htmlMs);
   liveSend({ type:'playback.progress', ms:currentMs });
   liveSend({ type:'response.cancel' });
   stopLivePlayback();

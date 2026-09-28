@@ -28,6 +28,22 @@ const AURORA_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'aura_inspect',
+      description: 'Inspect Aura System health, capabilities, or Aurora diagnostic traces before or after an operation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          operation: { type: 'string', enum: ['health', 'capabilities', 'diagnostics', 'diagnostic_trace'] },
+          traceId: { type: 'string' },
+        },
+        required: ['operation'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'hf_capability',
       description: 'Run a Hugging Face capability through the provider adapter. A model may be selected explicitly when the user or task requires it.',
       parameters: {
@@ -84,6 +100,19 @@ export function createAuroraCore({ provider, auraBridge = null }) {
           tool_call_id: call.id,
           content: JSON.stringify({ ok: false, domain: input.domain, action: input.action, error: error instanceof Error ? error.message : 'Unknown error' }),
         };
+      }
+    }
+
+    if (name === 'aura_inspect' && input.operation) {
+      try {
+        let result;
+        if (input.operation === 'health') result = auraBridge ? await auraBridge.health(signal) : { ok: false, reason: 'Aura bridge is not configured.' };
+        else if (input.operation === 'capabilities') result = auraBridge ? await auraBridge.capabilities(signal) : { ok: false, reason: 'Aura bridge is not configured.' };
+        else if (input.operation === 'diagnostics') result = auraBridge ? await auraBridge.diagnostics(undefined, signal) : { ok: false, reason: 'Aura bridge is not configured.' };
+        else result = auraBridge ? await auraBridge.diagnostics(input.traceId, signal) : { ok: false, reason: 'Aura bridge is not configured.' };
+        return { role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) };
+      } catch (error) {
+        return { role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: false, operation: input.operation, error: error instanceof Error ? error.message : 'Unknown error' }) };
       }
     }
 

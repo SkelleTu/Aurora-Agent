@@ -37,6 +37,49 @@ export function createHuggingFaceProvider(config = {}) {
       return readJsonResponse(response, 'Hugging Face request');
     },
 
+    async *chatStream({ messages, temperature = 0.7, maxTokens = 1024, tools, signal, model: requestedModel } = {}) {
+      const body = { model: requestedModel ?? model, messages, temperature, max_tokens: maxTokens, stream: true };
+      if (tools?.length) body.tools = tools;
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!response.ok || !response.body) {
+        const detail = await response.text();
+        throw new Error(`Hugging Face streaming request failed (${response.status}): ${detail}`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split(/\\r?\\n/);
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const payload = trimmed.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let chunk;
+            try { chunk = JSON.parse(payload); } catch { continue; }
+            const delta = chunk?.choices?.[0]?.delta || {};
+            yield {
+              content: typeof delta.content === 'string' ? delta.content : '',
+              toolCalls: Array.isArray(delta.tool_calls) ? delta.tool_calls : [],
+              finishReason: chunk?.choices?.[0]?.finish_reason ?? null,
+            };
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    },
+
     async runTask(task, args = {}, options = {}) {
       if (!client) throw new Error('HF_TOKEN is required for Hugging Face tasks.');
       const { method, model: profileModel } = resolveAuroraTask(task);

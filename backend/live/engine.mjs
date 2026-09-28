@@ -19,6 +19,8 @@ export class AuroraLiveSession {
     this.sessionId = sessionId;
     this.model = model || provider.model;
     this.realtimeAdapterFactory = realtimeAdapterFactory;
+    this.transcriberFactory = transcriberFactory;
+    this.transcriber = null;
     this.realtimeAdapter = null;
     this.responseSequencer = new ResponseCreateSequencer();
     this.playbackTracker = new PlaybackTracker();
@@ -78,6 +80,21 @@ export class AuroraLiveSession {
     adapter.on('closed', ({ reason }) => { if (!this.closed) this.emit('session.transport_closed', { reason }); });
   }
 
+  wireTranscriber(transcriber) {
+    this.transcriber = transcriber;
+    transcriber.on('connected', () => this.emit('input_transcription.connected', { model: transcriber.model || 'gemini-3.5-transcribe-live' }));
+    transcriber.on('interim', ({ text }) => this.emit('conversation.item.input_audio_transcription.delta', { text: String(text || ''), interim: true, replace: true }));
+    transcriber.on('final', ({ text }) => {
+      const value = String(text || '').trim();
+      if (value) {
+        this.emit('conversation.item.input_audio_transcription.completed', { text: value });
+        this.history.push({ role: 'user', content: value });
+      }
+    });
+    transcriber.on('error', ({ error }) => this.emit('error', { error: `Transcription: ${error}` }));
+    transcriber.on('closed', ({ reason }) => { if (!this.closed) this.emit('input_transcription.closed', { reason }); });
+  }
+
   emit(type, payload = {}) {
     if (!this.closed) this.send({ type, sessionId: this.sessionId, timestamp: now(), ...payload });
   }
@@ -88,7 +105,11 @@ export class AuroraLiveSession {
     if (this.realtimeAdapterFactory && !this.realtimeAdapter) {
       this.realtimeAdapter = this.realtimeAdapterFactory({ model: this.model, language: this.language });
       this.wireRealtimeAdapter(this.realtimeAdapter);
-      await this.realtimeAdapter.connect();
+      if (this.transcriberFactory && !this.transcriber) {
+        this.transcriber = this.transcriberFactory({ language: this.language });
+        this.wireTranscriber(this.transcriber);
+      }
+      await Promise.all([this.realtimeAdapter.connect(), this.transcriber ? this.transcriber.connect() : Promise.resolve()]);
     } else if (!this.realtimeAdapter) {
       this.emit('session.updated', { model: this.model, language: this.language, nativeAudio: false, transport: 'pipeline' });
     }
@@ -97,7 +118,11 @@ export class AuroraLiveSession {
   audio(chunk) {
     if (this.closed) return;
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    if (this.realtimeAdapter) { this.realtimeAdapter.sendAudio(buffer); return; }
+    if (this.realtimeAdapter) {
+      this.realtimeAdapter.sendAudio(buffer);
+      if (this.transcriber) this.transcriber.sendAudio(buffer);
+      return;
+    }
     this.inputChunks.push(buffer);
     this.inputBytes += buffer.length;
     if (this.inputBytes > 20 * 1024 * 1024) this.inputChunks.splice(0, Math.max(0, this.inputChunks.length - 40));
@@ -111,7 +136,11 @@ export class AuroraLiveSession {
 
   speechStopped() {
     this.emit('input_audio_buffer.speech_stopped');
-    if (this.realtimeAdapter) { this.realtimeAdapter.commitInput(); return; }
+    if (this.realtimeAdapter) {
+      this.realtimeAdapter.commitInput();
+      if (this.transcriber) this.transcriber.commitInput();
+      return;
+    }
     void this.commitInput();
   }
 
@@ -307,6 +336,7 @@ export class AuroraLiveSession {
     this.closed = true;
     this.response?.abort();
     this.realtimeAdapter?.close();
+    this.transcriber?.close();
     this.inputChunks = [];
     this.responseSegments.clear();
     this.emit('session.closed');

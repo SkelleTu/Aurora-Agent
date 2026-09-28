@@ -21,6 +21,8 @@ export class AuroraLiveSession {
     this.realtimeAdapterFactory = realtimeAdapterFactory;
     this.transcriberFactory = transcriberFactory;
     this.transcriber = null;
+    this.transcriberFactory = transcriberFactory;
+    this.transcriber = null;
     this.realtimeAdapter = null;
     this.responseSequencer = new ResponseCreateSequencer();
     this.playbackTracker = new PlaybackTracker();
@@ -93,6 +95,20 @@ export class AuroraLiveSession {
     });
     transcriber.on('error', ({ error }) => this.emit('error', { error: `Transcription: ${error}` }));
     transcriber.on('closed', ({ reason }) => { if (!this.closed) this.emit('input_transcription.closed', { reason }); });
+  }
+
+  wireTranscriber(transcriber) {
+    this.transcriber = transcriber;
+    transcriber.on('connected', ({ model }) => this.emit('input_transcription.connected', { model }));
+    transcriber.on('interim', ({ text }) => this.emit('conversation.item.input_audio_transcription.delta', { text: String(text || ''), interim: true, replace: true }));
+    transcriber.on('final', ({ text }) => {
+      const value = String(text || '').trim();
+      if (value) {
+        this.emit('conversation.item.input_audio_transcription.completed', { text: value });
+        this.history.push({ role: 'user', content: value });
+      }
+    });
+    transcriber.on('error', ({ error }) => this.emit('error', { error: `Transcription: ${error}` }));
   }
 
   emit(type, payload = {}) {
@@ -336,6 +352,7 @@ export class AuroraLiveSession {
     this.closed = true;
     this.response?.abort();
     this.realtimeAdapter?.close();
+    this.transcriber?.close();
     this.transcriber?.close();
     this.inputChunks = [];
     this.responseSegments.clear();

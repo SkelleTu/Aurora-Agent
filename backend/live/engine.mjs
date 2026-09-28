@@ -10,7 +10,7 @@ function safeJson(value) {
 function now() { return new Date().toISOString(); }
 
 export class AuroraLiveSession {
-  constructor({ provider, transcribe, synthesize, auraBridge, send, realtimeAdapterFactory = null, sessionId = randomUUID(), model = null }) {
+  constructor({ provider, transcribe, synthesize, auraBridge, send, realtimeAdapterFactory = null, transcriberFactory = null, sessionId = randomUUID(), model = null }) {
     this.provider = provider;
     this.transcribe = transcribe;
     this.synthesize = synthesize;
@@ -19,8 +19,6 @@ export class AuroraLiveSession {
     this.sessionId = sessionId;
     this.model = model || provider.model;
     this.realtimeAdapterFactory = realtimeAdapterFactory;
-    this.transcriberFactory = transcriberFactory;
-    this.transcriber = null;
     this.transcriberFactory = transcriberFactory;
     this.transcriber = null;
     this.realtimeAdapter = null;
@@ -352,7 +350,6 @@ export class AuroraLiveSession {
     this.closed = true;
     this.response?.abort();
     this.realtimeAdapter?.close();
-    this.transcriber?.close();
     this.transcriber?.close();
     this.inputChunks = [];
     this.responseSegments.clear();

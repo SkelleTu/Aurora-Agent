@@ -1,13 +1,16 @@
 import WebSocket from 'ws';
 import { RealtimeModelAdapter } from './model-adapter.mjs';
 import { LIVE_AURA_TOOL } from './tools.mjs';
+import { recordLiveTelemetry } from './telemetry.mjs';
 
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const DIAGNOSTICS = String(process.env.AURORA_LIVE_DIAGNOSTICS ?? 'true').toLowerCase() !== 'false';
 
-function diag(event, details = {}) {
+function diag(event, details = {}, sessionId = null) {
   if (!DIAGNOSTICS) return;
-  console.log('[AuroraLive]', JSON.stringify({ event, ts: new Date().toISOString(), ...details }));
+  const payload = { event, ts: new Date().toISOString(), ...details };
+  console.log('[AuroraLive]', JSON.stringify(payload));
+  if (sessionId) recordLiveTelemetry(event, sessionId, details);
 }
 
 function geminiTool() {
@@ -16,13 +19,14 @@ function geminiTool() {
 }
 
 export class GeminiLiveAdapter extends RealtimeModelAdapter {
-  constructor({ apiKey, model = 'gemini-3.8-live', language = 'pt-BR', auraBridge }) {
+  constructor({ apiKey, model = 'gemini-3.8-live', language = 'pt-BR', auraBridge, sessionId = null }) {
     super();
     if (!apiKey) throw new Error('GOOGLE_API_KEY is required for Gemini Live.');
     this.apiKey = apiKey;
     this.model = model;
     this.language = language;
     this.auraBridge = auraBridge;
+    this.sessionId = sessionId;
     this.socket = null;
     this.responseId = null;
     this.connected = false;
@@ -34,7 +38,7 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
   }
 
   async connect() {
-    diag('gemini_connect_start', { model: this.model, language: this.language });
+    diag('gemini_connect_start', { model: this.model, language: this.language }, this.sessionId);
     const url = `${ENDPOINT}?key=${encodeURIComponent(this.apiKey)}`;
     this.socket = new WebSocket(url);
     await new Promise((resolve, reject) => {
@@ -43,15 +47,15 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
       this.socket.once('error', (error) => { clearTimeout(timer); reject(error); });
     });
     this.connected = true;
-    diag('gemini_socket_open');
+    diag('gemini_socket_open', {}, this.sessionId);
     this.socket.on('message', (data) => void this.handleMessage(JSON.parse(String(data))));
     this.socket.on('error', (error) => {
-      diag('gemini_socket_error', { error: error?.message || String(error) });
+      diag('gemini_socket_error', { error: error?.message || String(error) }, this.sessionId);
       this.emit('error', { error: error?.message || String(error) });
     });
     this.socket.on('close', (code, reason) => {
       this.connected = false;
-      diag('gemini_socket_close', { code, reason: String(reason || '') });
+      diag('gemini_socket_close', { code, reason: String(reason || '') }, this.sessionId);
       this.emit('closed', { code, reason: String(reason || '') });
     });
 
@@ -73,7 +77,7 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
         outputAudioTranscription: {},
       },
     }));
-    diag('gemini_setup_sent', { inputTranscription: true, outputTranscription: true, nativeAudio: true });
+    diag('gemini_setup_sent', { inputTranscription: true, outputTranscription: true, nativeAudio: true }, this.sessionId);
     return this;
   }
 
@@ -82,7 +86,7 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
     this.audioChunks += 1;
     this.audioBytes += buffer.length;
     if (this.audioChunks === 1 || this.audioChunks % 50 === 0) {
-      diag('audio_to_gemini', { chunks: this.audioChunks, bytes: this.audioBytes, latestBytes: buffer.length });
+      diag('audio_to_gemini', { chunks: this.audioChunks, bytes: this.audioBytes, latestBytes: buffer.length }, this.sessionId);
     }
     if (!this.setupComplete) {
       this.pendingAudio.push(Buffer.from(buffer));
@@ -97,26 +101,26 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
 
   commitInput() {
     if (!this.connected) return;
-    diag('audio_commit', { chunks: this.audioChunks, bytes: this.audioBytes, setupComplete: this.setupComplete });
+    diag('audio_commit', { chunks: this.audioChunks, bytes: this.audioBytes, setupComplete: this.setupComplete }, this.sessionId);
     if (!this.setupComplete) { this.pendingCommit = true; return; }
     this.socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
   }
 
   interrupt() {
-    diag('audio_interrupt', { responseId: this.responseId });
+    diag('audio_interrupt', { responseId: this.responseId }, this.sessionId);
     this.emit('audio_interrupted', { responseId: this.responseId });
   }
 
   async sendToolResponse(functionResponses) {
     if (!this.connected || !this.setupComplete) return;
-    diag('tool_response_sent', { count: functionResponses.length });
+    diag('tool_response_sent', { count: functionResponses.length }, this.sessionId);
     this.socket.send(JSON.stringify({ toolResponse: { functionResponses } }));
   }
 
   async handleMessage(message) {
     if (message.setupComplete) {
       this.setupComplete = true;
-      diag('gemini_setup_complete', { queuedAudioChunks: this.pendingAudio.length, pendingCommit: this.pendingCommit });
+      diag('gemini_setup_complete', { queuedAudioChunks: this.pendingAudio.length, pendingCommit: this.pendingCommit }, this.sessionId);
       this.emit('connected', { model: this.model });
       const queued = this.pendingAudio.splice(0);
       for (const buffer of queued) {
@@ -129,24 +133,24 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
       return;
     }
     if (message.error) {
-      diag('gemini_protocol_error', { error: message.error });
+      diag('gemini_protocol_error', { error: message.error }, this.sessionId);
       this.emit('error', { error: JSON.stringify(message.error) });
       return;
     }
     const content = message.serverContent;
     if (content?.interimInputTranscription?.text) {
       const text = content.interimInputTranscription.text;
-      diag('input_transcript_interim', { chars: text.length });
+      diag('input_transcript_interim', { chars: text.length }, this.sessionId);
       this.emit('input_transcript_delta', { text, interim: true, replace: true });
     }
     if (content?.inputTranscription?.text) {
       const text = content.inputTranscription.text;
-      diag('input_transcript_final', { chars: text.length });
+      diag('input_transcript_final', { chars: text.length }, this.sessionId);
       this.emit('input_transcript_delta', { text, final: true, replace: true });
     }
     if (content?.outputTranscription?.text) {
       const text = content.outputTranscription.text;
-      diag('output_transcript_delta', { chars: text.length });
+      diag('output_transcript_delta', { chars: text.length }, this.sessionId);
       this.emit('output_transcript_delta', { text });
     }
 
@@ -157,13 +161,13 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
         this.emit('audio_delta', { responseId, data: Buffer.from(part.inlineData.data, 'base64'), sampleRate: 24000, channels: 1, encoding: 'pcm_s16le' });
       }
       if (part?.text) {
-        diag('output_text_delta', { chars: part.text.length });
+        diag('output_text_delta', { chars: part.text.length }, this.sessionId);
         this.emit('output_text_delta', { text: part.text });
       }
     }
 
     if (message.toolCall?.functionCalls?.length) {
-      diag('tool_call_received', { count: message.toolCall.functionCalls.length });
+      diag('tool_call_received', { count: message.toolCall.functionCalls.length }, this.sessionId);
       const functionResponses = [];
       for (const call of message.toolCall.functionCalls) {
         if (call.name !== 'aura_action') {
@@ -177,8 +181,10 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
             ? await this.auraBridge.dispatch({ domain: String(args.domain || ''), action: String(args.action || ''), args: args.args && typeof args.args === 'object' ? args.args : {} })
             : { ok: false, error: 'Aura bridge unavailable' };
           this.emit('tool_completed', { callId: call.id, name: call.name, result });
+          diag('tool_call_completed', { callId: call.id, ok: result?.ok }, this.sessionId);
         } catch (error) {
           result = { ok: false, error: error instanceof Error ? error.message : String(error) };
+          diag('tool_call_error', { callId: call.id, error: result.error }, this.sessionId);
         }
         functionResponses.push({ id: call.id, name: call.name, response: { result } });
       }
@@ -186,12 +192,12 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
     }
 
     if (content?.interrupted) {
-      diag('response_interrupted', { responseId: this.responseId });
+      diag('response_interrupted', { responseId: this.responseId }, this.sessionId);
       this.emit('audio_interrupted', { responseId: this.responseId });
     }
     if (content?.turnComplete) {
       const responseId = this.responseId;
-      diag('response_complete', { responseId });
+      diag('response_complete', { responseId }, this.sessionId);
       this.emit('audio_done', { responseId });
       this.emit('response_done', { responseId });
       this.responseId = null;
@@ -199,7 +205,7 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
   }
 
   close() {
-    diag('gemini_close', { audioChunks: this.audioChunks, audioBytes: this.audioBytes });
+    diag('gemini_close', { audioChunks: this.audioChunks, audioBytes: this.audioBytes }, this.sessionId);
     try { this.socket?.close(); } catch {}
     this.socket = null;
     this.connected = false;

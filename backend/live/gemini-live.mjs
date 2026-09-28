@@ -21,6 +21,8 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
     this.responseId = null;
     this.connected = false;
     this.setupComplete = false;
+    this.pendingAudio = [];
+    this.pendingCommit = false;
   }
 
   async connect() {
@@ -58,7 +60,11 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
   }
 
   sendAudio(buffer) {
-    if (!this.connected || !this.setupComplete || !buffer?.length) return;
+    if (!this.connected || !buffer?.length) return;
+    if (!this.setupComplete) {
+      this.pendingAudio.push(Buffer.from(buffer));
+      return;
+    }
     this.socket.send(JSON.stringify({
       realtimeInput: {
         audio: { data: Buffer.from(buffer).toString('base64'), mimeType: 'audio/pcm;rate=16000' },
@@ -67,7 +73,9 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
   }
 
   commitInput() {
-    if (this.connected && this.setupComplete) this.socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+    if (!this.connected) return;
+    if (!this.setupComplete) { this.pendingCommit = true; return; }
+    this.socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
   }
 
   interrupt() {
@@ -83,11 +91,19 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
     if (message.setupComplete) {
       this.setupComplete = true;
       this.emit('connected', { model: this.model });
+      const queued = this.pendingAudio.splice(0);
+      for (const buffer of queued) {
+        this.socket.send(JSON.stringify({ realtimeInput: { audio: { data: buffer.toString('base64'), mimeType: 'audio/pcm;rate=16000' } } }));
+      }
+      if (this.pendingCommit) {
+        this.pendingCommit = false;
+        this.socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+      }
       return;
     }
     const content = message.serverContent;
-    if (content?.interimInputTranscription?.text) this.emit('input_transcript_delta', { text: content.interimInputTranscription.text, interim: true });
-    if (content?.inputTranscription?.text) this.emit('input_transcript_delta', { text: content.inputTranscription.text, final: true });
+    if (content?.interimInputTranscription?.text) this.emit('input_transcript_delta', { text: content.interimInputTranscription.text, interim: true, replace: true });
+    if (content?.inputTranscription?.text) this.emit('input_transcript_delta', { text: content.inputTranscription.text, final: true, replace: true });
     if (content?.outputTranscription?.text) this.emit('output_transcript_delta', { text: content.outputTranscription.text });
 
     for (const part of content?.modelTurn?.parts || []) {
@@ -137,6 +153,8 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
     this.socket = null;
     this.connected = false;
     this.setupComplete = false;
+    this.pendingAudio = [];
+    this.pendingCommit = false;
     this.responseId = null;
   }
 }

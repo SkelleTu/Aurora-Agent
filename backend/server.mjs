@@ -11,7 +11,6 @@ import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
 import { createAuraBridge } from './aurora/bridge.mjs';
-import googleTts from 'google-translate-tts';
 
 const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -86,6 +85,32 @@ async function transcribe(req) {
   return { text: result.text ?? '', model: HF_STT_MODEL };
 }
 
+async function googleTranslateTts(text, signal) {
+  const params = new URLSearchParams({
+    ie: 'UTF-8',
+    client: 'tw-ob',
+    tl: GOOGLE_TTS_VOICE,
+    q: String(text),
+  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const response = await fetch(`https://translate.google.com/translate_tts?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!response.ok) throw new Error(`Google TTS HTTP ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!buffer.length) throw new Error('Google TTS returned empty audio');
+    return { buffer, contentType: response.headers.get('content-type') || 'audio/mpeg', model: 'google-translate-tts', durationMs: 0, engine: 'google-translate' };
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 async function synthesize(text, signal) {
   const value = String(text || '').trim();
   if (!value) throw new Error('TTS text is empty');
@@ -105,9 +130,7 @@ async function synthesize(text, signal) {
   }
   try {
     if (signal?.aborted) throw new Error('TTS request aborted');
-    const buffer = await googleTts.synthesize({ text: value, voice: GOOGLE_TTS_VOICE, slow: false });
-    if (!buffer?.length) throw new Error('Google TTS returned empty audio');
-    return { buffer: Buffer.from(buffer), contentType: 'audio/mpeg', model: 'google-translate-tts', durationMs: 0, engine: 'google-translate' };
+    return await googleTranslateTts(value, signal);
   } catch (error) {
     lastError = error;
   }

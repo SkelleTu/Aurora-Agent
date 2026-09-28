@@ -115,36 +115,81 @@ export class AuroraLiveSession {
     this.responseId = randomUUID();
     this.responseText = '';
     this.playbackMs = 0;
-    this.emit('response.created', { responseId: this.responseId, turn, model: this.model });
-    const tools = [LIVE_AURA_TOOL];
-    const response = await this.provider.chat({
-      messages: this.history,
-      tools,
-      signal: controller.signal,
-      model: this.model,
-      maxTokens: 700,
-      temperature: 0.7,
-    });
-    if (controller.signal.aborted || this.closed) return;
-    let message = response?.choices?.[0]?.message;
-    if (!message) throw new Error('Model returned no live response.');
+    this.emit('response.created', { responseId:this.responseId, turn, model:this.model });
 
-    if (message.tool_calls?.length) {
-      this.history.push({ role: 'assistant', content: message.content || '', tool_calls: message.tool_calls });
-      for (const call of message.tool_calls) {
+    const tools = [LIVE_AURA_TOOL];
+    let toolCalls = [];
+    let streamedText = '';
+    let spokenUntil = 0;
+
+    if (typeof this.provider.chatStream === 'function') {
+      for await (const delta of this.provider.chatStream({
+        messages: this.history,
+        tools,
+        signal: controller.signal,
+        model: this.model,
+        maxTokens: 700,
+        temperature: 0.7,
+      })) {
+        if (controller.signal.aborted || this.closed) return;
+        if (delta.toolCalls?.length) {
+          for (const part of delta.toolCalls) {
+            const index = Number(part.index ?? 0);
+            toolCalls[index] ||= { id: part.id || randomUUID(), type:'function', function:{ name:'', arguments:'' } };
+            if (part.id) toolCalls[index].id = part.id;
+            if (part.function?.name) toolCalls[index].function.name += part.function.name;
+            if (part.function?.arguments) toolCalls[index].function.arguments += part.function.arguments;
+          }
+        }
+        if (delta.content) {
+          streamedText += delta.content;
+          this.responseText = streamedText;
+          this.emit('response.text.delta', { responseId:this.responseId, delta:delta.content, turn });
+          if (!toolCalls.length) {
+            const available = streamedText.slice(spokenUntil);
+            const match = available.match(/^([\\s\\S]*?[.!?](?:\\s|$))/);
+            if (match) {
+              const sentence = match[1].trim();
+              spokenUntil += match[1].length;
+              await this.speakSegment(sentence, controller.signal, turn);
+            }
+          }
+        }
+      }
+    } else {
+      const response = await this.provider.chat({ messages:this.history, tools, signal:controller.signal, model:this.model, maxTokens:700, temperature:0.7 });
+      const message = response?.choices?.[0]?.message;
+      if (!message) throw new Error('Model returned no live response.');
+      streamedText = String(message.content || '');
+      toolCalls = message.tool_calls || [];
+    }
+
+    if (controller.signal.aborted || this.closed) return;
+
+    if (toolCalls.length) {
+      this.history.push({ role:'assistant', content:streamedText, tool_calls:toolCalls });
+      for (const call of toolCalls) {
         if (controller.signal.aborted) return;
         const result = await this.executeTool(call, controller.signal);
         this.history.push(result.message);
       }
-      const followup = await this.provider.chat({ messages: this.history, tools, signal: controller.signal, model: this.model, maxTokens: 700, temperature: 0.7 });
-      message = followup?.choices?.[0]?.message;
+      const followup = await this.provider.chat({ messages:this.history, tools, signal:controller.signal, model:this.model, maxTokens:700, temperature:0.7 });
+      const message = followup?.choices?.[0]?.message;
       if (!message) throw new Error('Model returned no live follow-up.');
+      streamedText = String(message.content || '').trim();
+      if (streamedText) {
+        this.emit('response.text.delta', { responseId:this.responseId, delta:streamedText, turn });
+        await this.speakResponseText(streamedText, controller.signal, turn);
+      }
+    } else {
+      const remaining = streamedText.slice(spokenUntil).trim();
+      if (remaining) await this.speakSegment(remaining, controller.signal, turn);
     }
 
-    const text = String(message.content || '').trim();
-    if (!text) return;
-    this.history.push({ role: 'assistant', content: text });
-    await this.speakResponse(text, controller.signal, turn);
+    if (streamedText.trim()) {
+      this.history.push({ role:'assistant', content:streamedText.trim() });
+      this.emit('response.text.completed', { responseId:this.responseId, text:streamedText.trim(), turn });
+    }
   }
 
   async executeTool(call, signal) {
@@ -162,26 +207,30 @@ export class AuroraLiveSession {
     return { message: { role:'tool', tool_call_id:id, content:safeJson(result) } };
   }
 
-  async speakResponse(text, signal, turn) {
+  async speakResponseText(text, signal, turn) {
     const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map(s => s.trim()).filter(Boolean) || [text];
-    this.emit('response.text.completed', { responseId:this.responseId, text, turn });
     for (const sentence of sentences) {
       if (signal.aborted || this.closed) return;
-      const segmentId = randomUUID();
-      this.responseSegments.set(segmentId, { text: sentence, startedAt: Date.now() });
-      this.emit('response.audio.segment.started', { responseId:this.responseId, segmentId, text:sentence });
-      const audio = await this.synthesize(sentence, signal);
-      if (signal.aborted || this.closed) return;
-      this.emit('response.audio.segment', {
-        responseId:this.responseId,
-        segmentId,
-        text:sentence,
-        contentType:audio.contentType,
-        durationMs:audio.durationMs || 0,
-        data:audio.buffer.toString('base64'),
-      });
-      this.emit('response.audio.segment.done', { responseId:this.responseId, segmentId });
+      await this.speakSegment(sentence, signal, turn);
     }
+  }
+
+  async speakSegment(sentence, signal, turn) {
+    if (!sentence.trim() || signal.aborted || this.closed) return;
+    const segmentId = randomUUID();
+    this.responseSegments.set(segmentId, { text:sentence, startedAt:Date.now() });
+    this.emit('response.audio.segment.started', { responseId:this.responseId, segmentId, text:sentence, turn });
+    const audio = await this.synthesize(sentence, signal);
+    if (signal.aborted || this.closed) return;
+    this.emit('response.audio.segment', {
+      responseId:this.responseId,
+      segmentId,
+      text:sentence,
+      contentType:audio.contentType,
+      durationMs:audio.durationMs || 0,
+      data:audio.buffer.toString('base64'),
+    });
+    this.emit('response.audio.segment.done', { responseId:this.responseId, segmentId, turn });
   }
 
   interrupt(reason = 'user_speech') {

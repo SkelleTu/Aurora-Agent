@@ -52,7 +52,9 @@ export class GeminiLiveAdapter extends RealtimeModelAdapter {
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
         },
         tools: [{ functionDeclarations: [geminiTool()] }],
-        // Input transcription is handled by the dedicated Gemini Live transcriber.
+        // The same native-audio Live session also emits incremental input transcription.
+        // This keeps the microphone, agent audio, VAD and transcript on one connection.
+        inputAudioTranscription: { languageCodes: [this.language], mode: 'VERBATIM' },
         outputAudioTranscription: {},
       },
     }));

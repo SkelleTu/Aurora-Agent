@@ -1,4 +1,4 @@
-const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_TIMEOUT_MS = 50000;
 
 function joinUrl(base, path) {
   return `${String(base).replace(/\/$/, '')}/${String(path).replace(/^\//, '')}`;
@@ -13,6 +13,9 @@ export function createAuraBridge(config = {}) {
     if (!baseUrl) return { ok: false, configured: false, reason: 'AURA_SYSTEM_URL is not configured.' };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const startedAt = Date.now();
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const headers = token ? { authorization: `Bearer ${token}` } : {};
       if (body !== undefined) headers['content-type'] = 'application/json';
@@ -20,14 +23,23 @@ export function createAuraBridge(config = {}) {
         method,
         headers,
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        signal: controller.signal,
       });
       const text = await response.text();
       let result;
       try { result = text ? JSON.parse(text) : null; } catch { result = { raw: text }; }
-      return { ok: response.ok, status: response.status, configured: true, result };
+      return { ok: response.ok, status: response.status, configured: true, latencyMs: Date.now() - startedAt, result };
+    } catch (error) {
+      return {
+        ok: false,
+        configured: true,
+        latencyMs: Date.now() - startedAt,
+        timedOut: error instanceof Error && error.name === 'AbortError',
+        reason: error instanceof Error ? error.message : 'Aura System request failed',
+      };
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -35,7 +47,7 @@ export function createAuraBridge(config = {}) {
     configured: Boolean(baseUrl),
     async health(signal) {
       const result = await request('/api/healthz', { signal });
-      return { ok: result.ok, status: result.status, configured: result.configured, result: result.result };
+      return { ok: result.ok, status: result.status, configured: result.configured, latencyMs: result.latencyMs, result: result.result, reason: result.reason };
     },
     async capabilities(signal) {
       return request('/api/capabilities', { signal });
@@ -50,7 +62,15 @@ export function createAuraBridge(config = {}) {
     async dispatch({ domain, action, args = {}, signal } = {}) {
       if (!domain || !action) return { ok: false, dispatched: false, reason: 'domain and action are required.' };
       const result = await request('/api/agent/action', { method: 'POST', body: { domain, action, args }, signal });
-      return { ok: result.ok, dispatched: result.ok, status: result.status, result: result.result };
+      return {
+        ok: result.ok,
+        dispatched: result.ok,
+        status: result.status,
+        latencyMs: result.latencyMs,
+        timedOut: result.timedOut,
+        reason: result.reason,
+        result: result.result,
+      };
     },
   };
 }

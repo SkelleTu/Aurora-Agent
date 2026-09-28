@@ -161,12 +161,15 @@ const server = http.createServer(async (req, res) => {
 });
 const liveWss = new WebSocketServer({ server, path: '/api/live' });
 liveWss.on('connection', (socket) => {
+  const liveAdapterFactory = LIVE_PROVIDER === 'gemini'
+    ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge })
+    : null;
   const live = new AuroraLiveSession({
     provider,
     realtimeAdapterFactory: liveAdapterFactory,
     auraBridge,
     sessionId: crypto.randomUUID(),
-    model: provider.model,
+    model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model,
     transcribe: async (pcm, signal) => {
       requireHF();
       const result = await hf.automaticSpeechRecognition({ model: HF_STT_MODEL, data: pcm }, { signal });
@@ -181,9 +184,6 @@ liveWss.on('connection', (socket) => {
     },
     send: (event) => { if (socket.readyState === 1) socket.send(JSON.stringify(event)); },
   });
-  const liveAdapterFactory = LIVE_PROVIDER === 'gemini'
-    ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge })
-    : null;
   void live.configure({ language: LIVE_LANGUAGE, model: LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, ...(liveAdapterFactory ? { realtimeAdapterFactory: liveAdapterFactory } : {}) });
   socket.on('message', (raw, isBinary) => {
     try {

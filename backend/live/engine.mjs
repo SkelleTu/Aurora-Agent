@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { ResponseCreateSequencer } from './response-sequencer.mjs';
+import { PlaybackTracker } from './playback-tracker.mjs';
+import { LIVE_SYSTEM_PROMPT, LIVE_AURA_TOOL } from './tools.mjs';
 
-const LIVE_SYSTEM_PROMPT = `You are Aurora, the live voice agent of Aura System. Speak naturally in Brazilian Portuguese unless the user speaks another language. Keep responses concise and conversational. You are operating inside a persistent full-duplex voice session. Never claim an Aura action succeeded unless its tool result confirms it.`;
-
-export const LIVE_AURA_TOOL = {
+const LIVE_AURA_TOOL_UNUSED = {
   type: 'function',
   function: {
     name: 'aura_action',
@@ -27,7 +28,7 @@ function safeJson(value) {
 function now() { return new Date().toISOString(); }
 
 export class AuroraLiveSession {
-  constructor({ provider, transcribe, synthesize, auraBridge, send, sessionId = randomUUID(), model = null }) {
+  constructor({ provider, transcribe, synthesize, auraBridge, send, realtimeAdapterFactory = null, sessionId = randomUUID(), model = null }) {
     this.provider = provider;
     this.transcribe = transcribe;
     this.synthesize = synthesize;
@@ -35,6 +36,12 @@ export class AuroraLiveSession {
     this.send = send;
     this.sessionId = sessionId;
     this.model = model || provider.model;
+    this.realtimeAdapterFactory = realtimeAdapterFactory;
+    this.realtimeAdapter = null;
+    this.responseSequencer = new ResponseCreateSequencer();
+    this.playbackTracker = new PlaybackTracker();
+    this.inputTranscript = '';
+    this.outputTranscript = '';
     this.history = [{ role: 'system', content: LIVE_SYSTEM_PROMPT }];
     this.inputChunks = [];
     this.inputBytes = 0;
@@ -49,19 +56,47 @@ export class AuroraLiveSession {
     this.toolCalls = new Set();
   }
 
+  wireRealtimeAdapter(adapter) {
+    this.realtimeAdapter = adapter;
+    adapter.on('connected', ({ model }) => this.emit('session.updated', { model: model || this.model, language: this.language, nativeAudio: true, transport: 'realtime-model' }));
+    adapter.on('input_transcript_delta', ({ text }) => { this.inputTranscript += String(text || ''); this.emit('conversation.item.input_audio_transcription.delta', { text: String(text || '') }); });
+    adapter.on('output_transcript_delta', ({ text }) => { this.outputTranscript += String(text || ''); this.emit('response.audio.transcript.delta', { responseId: this.responseId, delta: String(text || '') }); });
+    adapter.on('output_text_delta', ({ text }) => this.emit('response.text.delta', { responseId: this.responseId, delta: String(text || '') }));
+    adapter.on('audio_delta', ({ responseId, data, sampleRate = 24000, channels = 1, encoding = 'pcm_s16le' }) => {
+      this.responseId = responseId || this.responseId || randomUUID();
+      this.responseSequencer.begin(this.responseId);
+      this.playbackTracker.start(this.responseId);
+      this.emit('response.created', { responseId: this.responseId, model: this.model, nativeAudio: true });
+      this.emit('response.audio.delta', { responseId: this.responseId, sampleRate, channels, encoding, data: Buffer.from(data).toString('base64') });
+    });
+    adapter.on('audio_done', ({ responseId }) => this.emit('response.audio.done', { responseId: responseId || this.responseId }));
+    adapter.on('response_done', ({ responseId }) => { this.emit('response.done', { responseId: responseId || this.responseId, status: 'completed', nativeAudio: true }); this.responseSequencer.clear(responseId || this.responseId); this.playbackTracker.stop(); this.responseId = null; this.outputTranscript = ''; });
+    adapter.on('audio_interrupted', ({ responseId }) => { const id = responseId || this.responseId; if (id) { const heardMs = this.playbackTracker.current(); this.emit('response.audio.interrupted', { responseId: id, audioEndMs: heardMs }); this.emit('conversation.item.truncated', { responseId: id, audioEndMs: heardMs }); } });
+    adapter.on('tool_completed', (payload) => this.emit('tool.completed', payload));
+    adapter.on('error', ({ error }) => this.emit('error', { error }));
+    adapter.on('closed', ({ reason }) => { if (!this.closed) this.emit('session.transport_closed', { reason }); });
+  }
+
   emit(type, payload = {}) {
     if (!this.closed) this.send({ type, sessionId: this.sessionId, timestamp: now(), ...payload });
   }
 
-  configure({ model, language } = {}) {
+  async configure({ model, language } = {}) {
     if (model) this.model = String(model);
     this.language = language || this.language || 'pt-BR';
-    this.emit('session.updated', { model: this.model, language: this.language });
+    if (this.realtimeAdapterFactory && !this.realtimeAdapter) {
+      this.realtimeAdapter = this.realtimeAdapterFactory({ model: this.model, language: this.language });
+      this.wireRealtimeAdapter(this.realtimeAdapter);
+      await this.realtimeAdapter.connect();
+    } else if (!this.realtimeAdapter) {
+      this.emit('session.updated', { model: this.model, language: this.language, nativeAudio: false, transport: 'pipeline' });
+    }
   }
 
   audio(chunk) {
     if (this.closed) return;
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (this.realtimeAdapter) { this.realtimeAdapter.sendAudio(buffer); return; }
     this.inputChunks.push(buffer);
     this.inputBytes += buffer.length;
     if (this.inputBytes > 20 * 1024 * 1024) this.inputChunks.splice(0, Math.max(0, this.inputChunks.length - 40));
@@ -69,19 +104,23 @@ export class AuroraLiveSession {
 
   speechStarted() {
     this.emit('input_audio_buffer.speech_started');
+    if (this.realtimeAdapter) { this.realtimeAdapter.interrupt(); return; }
     if (this.response) this.interrupt('user_speech');
   }
 
   speechStopped() {
     this.emit('input_audio_buffer.speech_stopped');
+    if (this.realtimeAdapter) { this.realtimeAdapter.commitInput(); return; }
     void this.commitInput();
   }
 
   playbackProgress(ms) {
     this.playbackMs = Math.max(0, Number(ms) || 0);
+    this.playbackTracker.progress(this.playbackMs);
   }
 
   async commitInput() {
+    if (this.realtimeAdapter) return;
     if (this.closed || this.busy || !this.inputBytes) return;
     const pcm = Buffer.concat(this.inputChunks);
     this.inputChunks = [];
@@ -235,6 +274,20 @@ export class AuroraLiveSession {
   }
 
   interrupt(reason = 'user_speech') {
+    if (this.realtimeAdapter) {
+      const responseId = this.responseId;
+      const heardMs = this.playbackTracker.current();
+      this.realtimeAdapter.interrupt();
+      if (responseId) {
+        this.emit('response.cancelled', { responseId, reason });
+        this.emit('response.audio.cleared', { responseId });
+        this.emit('conversation.item.truncated', { responseId, audioEndMs: heardMs });
+      }
+      this.responseSequencer.cancel(responseId);
+      this.playbackTracker.stop();
+      this.responseId = null;
+      return;
+    }
     const responseId = this.responseId;
     const heardMs = this.playbackMs;
     const controller = this.response;
@@ -252,6 +305,7 @@ export class AuroraLiveSession {
     if (this.closed) return;
     this.closed = true;
     this.response?.abort();
+    this.realtimeAdapter?.close();
     this.inputChunks = [];
     this.responseSegments.clear();
     this.emit('session.closed');

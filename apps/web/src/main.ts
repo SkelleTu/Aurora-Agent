@@ -130,6 +130,8 @@ async function ensureSession() {
 }
 function clearEmpty() { chat.querySelector('.empty-chat')?.remove(); }
 function addMessage(who: 'user' | 'assistant', text: string) { clearEmpty(); const el = document.createElement('div'); el.className = `msg ${who}`; el.innerHTML = `<span>${who === 'user' ? 'VOCÊ' : 'AURORA'}</span><p></p>`; el.querySelector('p')!.textContent = text; chat.append(el); chat.scrollTop = chat.scrollHeight; }
+function upsertLiveMessage(who: 'user' | 'assistant', key: string, text: string, append = false) { clearEmpty(); let el = Array.from(chat.querySelectorAll<HTMLElement>('.msg')).find(item => item.dataset.liveKey === key); if (!el) { el = document.createElement('div'); el.className = `msg ${who}`; el.dataset.liveKey = key; el.innerHTML = `<span>${who === 'user' ? 'VOCÊ' : 'AURORA'}</span><p></p>`; chat.append(el); } const p = el.querySelector('p')!; p.textContent = append ? p.textContent + text : text; chat.scrollTop = chat.scrollHeight; return el; }
+function finalizeLiveMessage(key: string) { const el = Array.from(chat.querySelectorAll<HTMLElement>('.msg')).find(item => item.dataset.liveKey === key); if (el) delete el.dataset.liveKey; }
 
 async function health() {
   try {
@@ -319,6 +321,7 @@ const liveState = {
   noiseFloor: 0.008,
   noiseSamples: 0,
   model: '',
+  outputTranscriptSeen: new Set<string>(),
 };
 
 function setLiveVoiceState(label: string) {
@@ -443,15 +446,39 @@ function handleLiveEvent(event: any) {
       liveState.speaking = false;
       setLiveVoiceState('◌ Aurora processando…');
       break;
-    case 'conversation.item.input_audio_transcription.completed':
-      addMessage('user', String(event.text || ''));
+    case 'conversation.item.input_audio_transcription.delta': {
+      const text = String(event.text || '');
+      if (text) upsertLiveMessage('user', 'live-user-current', text, !(event.interim || event.replace));
       break;
+    }
+    case 'conversation.item.input_audio_transcription.completed': {
+      const text = String(event.text || '').trim();
+      if (text) upsertLiveMessage('user', 'live-user-current', text, false);
+      finalizeLiveMessage('live-user-current');
+      break;
+    }
     case 'response.created':
+      liveState.outputTranscriptSeen.delete(String(event.responseId || ''));
       setLiveVoiceState('◌ Aurora preparando resposta…');
       break;
-    case 'response.text.completed':
-      if (String(event.text || '').trim()) addMessage('assistant', String(event.text).trim());
+    case 'response.audio.transcript.delta': {
+      const responseId = String(event.responseId || 'live-response');
+      const text = String(event.delta || '');
+      if (text) { liveState.outputTranscriptSeen.add(responseId); upsertLiveMessage('assistant', `live-assistant-${responseId}`, text, true); }
       break;
+    }
+    case 'response.text.delta': {
+      const responseId = String(event.responseId || 'live-response');
+      const text = String(event.delta || '');
+      if (text && !liveState.outputTranscriptSeen.has(responseId)) upsertLiveMessage('assistant', `live-assistant-${responseId}`, text, true);
+      break;
+    }
+    case 'response.text.completed': {
+      const responseId = String(event.responseId || 'live-response');
+      const text = String(event.text || '').trim();
+      if (text) upsertLiveMessage('assistant', `live-assistant-${responseId}`, text, false);
+      break;
+    }
     case 'response.audio.delta':
       scheduleLivePcm(event);
       break;

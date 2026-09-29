@@ -108,6 +108,30 @@ export function createAuraBridge(config = {}) {
     };
   }
 
+  async function tooling(signal) {
+    const result = await request('/api/agent/tooling', { signal, base: gatewayUrl || baseUrl });
+    return { ...result, operatorMode: mode };
+  }
+
+  async function executeTooling({ steps = [], dryRun = false, stopOnError = true, maxSteps = 32, traceId, requestId, signal } = {}) {
+    const resolvedTraceId = id(traceId);
+    const resolvedRequestId = id(requestId);
+    const result = await request('/api/agent/tooling/execute', {
+      method: 'POST',
+      body: { steps, dryRun, stopOnError, maxSteps },
+      traceId: resolvedTraceId,
+      requestId: resolvedRequestId,
+      signal,
+      base: gatewayUrl || baseUrl,
+    });
+    return {
+      ...result,
+      traceId: result.traceId ?? resolvedTraceId,
+      requestId: result.requestId ?? resolvedRequestId,
+      operatorMode: mode,
+    };
+  }
+
   return {
     configured: Boolean(baseUrl || gatewayUrl),
     gatewayConfigured: Boolean(gatewayUrl),
@@ -120,6 +144,8 @@ export function createAuraBridge(config = {}) {
       const result = await request('/api/agent/capabilities', { signal, base: gatewayUrl || baseUrl });
       return { ...result, operatorMode: mode };
     },
+    tooling,
+    executeTooling,
     async diagnostics(traceId, signal) {
       const path = traceId ? `/api/diagnostics/aurora/${encodeURIComponent(traceId)}` : '/api/diagnostics/aurora';
       return request(path, { signal, traceId, base: baseUrl || gatewayUrl });

@@ -1,7 +1,7 @@
 /* Aurora Agent brand layer */
 .brand-mark {
   font-size: 0 !important;
-  background: url("/icons/aurora-64.webp") center / contain no-repeat !important;
+  background: url("/icons/aurora.svg?v=2") center / contain no-repeat !important;
   filter: drop-shadow(0 0 14px rgba(123,92,255,.28));
 }
 .hero::after {

@@ -70,6 +70,7 @@ export const AURA_TOOL_NAMES = [
   'integratesystem.health',
   'integratesystem.status',
   'integratesystem.diagnostics',
+  'integratesystem.api',
 ] as const;
 
 export type AuraToolName = (typeof AURA_TOOL_NAMES)[number];

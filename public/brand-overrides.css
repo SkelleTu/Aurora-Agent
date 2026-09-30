@@ -15,7 +15,7 @@
   height: 190px;
   right: -18px;
   top: -58px;
-  background: url("/icons/aurora.svg?v=3") center / contain no-repeat;
+  background: url("/branding/aurora-agent-logo.png") center / contain no-repeat;
   opacity: .075;
   filter: drop-shadow(0 0 34px rgba(0,217,255,.25));
   pointer-events: none;
@@ -27,7 +27,7 @@
   bottom: 42px;
   width: 90px;
   height: 90px;
-  background: url("/icons/aurora.svg?v=3") center / contain no-repeat;
+  background: url("/branding/aurora-agent-logo.png") center / contain no-repeat;
   opacity: .035;
   pointer-events: none;
 }

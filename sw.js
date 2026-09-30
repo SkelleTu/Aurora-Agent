@@ -1,5 +1,5 @@
-const CACHE='aurora-agent-brand-v2';
-const SHELL=['/','/manifest.json?v=2','/icons/aurora.svg?v=2','/icons/aurora-64.webp?v=2','/icons/aurora-192.webp?v=2','/brand-overrides.css?v=2'];
+const CACHE='aurora-agent-brand-v3';
+const SHELL=['/','/manifest.json?v=4','/icons/aurora.svg?v=6','/icons/aurora-logo.png?v=2','/icons/aurora-192.png?v=2','/icons/aurora-512.png?v=2','/brand-overrides.css?v=5'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));
-self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x.startsWith('aurora-agent-')&&x!==CACHE).map(x=>caches.delete(x)))).then(()=>self.clients.claim())));
-self.addEventListener('fetch',e=>{const r=e.request;if(r.method!=='GET'||new URL(r.url).origin!==self.location.origin||new URL(r.url).pathname.startsWith('/api/'))return;e.respondWith(fetch(r).then(x=>{caches.open(CACHE).then(c=>c.put(r,x.clone())).catch(()=>{});return x}).catch(()=>caches.match(r).then(x=>x||caches.match('/'))))});
+self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('aurora-agent-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
+self.addEventListener('fetch',e=>{const r=e.request;if(r.method!=='GET'||new URL(r.url).origin!==self.location.origin||new URL(r.url).pathname.startsWith('/api/'))return;e.respondWith(fetch(r).then(x=>{caches.open(CACHE).then(c=>c.put(r,x.clone())).catch(()=>{});return x}).catch(()=>caches.match(r).then(x=>x||caches.match('/'))));});

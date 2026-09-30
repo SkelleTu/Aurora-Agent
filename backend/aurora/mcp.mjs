@@ -16,7 +16,7 @@ function verify(raw, scope) {
   if(!MCP_SECRET) return null;
   const p=raw.split(".");
   if(p.length!==3) return null;
-  let h, c:Claims;
+  let h, c;
   try {
     h=JSON.parse(Buffer.from(p[0],"base64url").toString());
     c=JSON.parse(Buffer.from(p[1],"base64url").toString());
@@ -40,8 +40,8 @@ function auth(req,res,scope="aura.read"){
 }
 
 async function readJson(req){
-  const chunks[]=[];
-  for await(const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk.from(chunk));
+  const chunks=[];
+  for await(const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));
   if(!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }

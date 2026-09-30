@@ -1,9 +1,9 @@
-const CACHE_NAME = "aurora-agent-pwa-v1";
+const CACHE_NAME = "aurora-agent-pwa-v2";
 const APP_SHELL = [
   "/",
-  "/manifest.json?v=6",
-  "/icons/aurora.svg?v=8",
-  "/icons/aurora-logo.png?v=3"
+  "/manifest.json?v=7",
+  "/icons/aurora.svg?v=9",
+  "/icons/aurora-logo.png?v=4"
 ];
 
 self.addEventListener("install", (event) => {

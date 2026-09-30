@@ -1,7 +1,11 @@
 /* Aurora Agent brand layer */
 .brand-mark {
+  display: block !important;
+  width: 46px !important;
+  height: 46px !important;
+  object-fit: contain !important;
+  background: none !important;
   font-size: 0 !important;
-  background: url("/icons/aurora.svg?v=2") center / contain no-repeat !important;
   filter: drop-shadow(0 0 14px rgba(123,92,255,.28));
 }
 .hero::after {
@@ -11,7 +15,7 @@
   height: 190px;
   right: -18px;
   top: -58px;
-  background: url("/icons/aurora-192.webp") center / contain no-repeat;
+  background: url("/icons/aurora.svg?v=3") center / contain no-repeat;
   opacity: .075;
   filter: drop-shadow(0 0 34px rgba(0,217,255,.25));
   pointer-events: none;
@@ -23,7 +27,7 @@
   bottom: 42px;
   width: 90px;
   height: 90px;
-  background: url("/icons/aurora-64.webp") center / contain no-repeat;
+  background: url("/icons/aurora.svg?v=3") center / contain no-repeat;
   opacity: .035;
   pointer-events: none;
 }

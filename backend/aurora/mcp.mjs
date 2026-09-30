@@ -6,11 +6,11 @@ import { z } from "zod";
 const RESOURCE_URL = String(process.env.MCP_RESOURCE_URL ?? "https://aurora-agent-o9x5.onrender.com").replace(/\/$/, "");
 const OAUTH_ISSUER = String(process.env.MCP_OAUTH_ISSUER ?? "https://integrated-system-gzyu.onrender.com").replace(/\/$/, "");
 const MCP_SECRET = String(process.env.MCP_OAUTH_SECRET ?? "");
-const PORT = String(process.env.PORT ?? process.env.AURORA_PORT ?? "8787");
+const PORT = String(process.env.PORT ?? process.env.AURORA_PORT ?? "10000");
 
 function b64(value){ return Buffer.from(value).toString("base64url"); }
 function equal(a,b){ const x=Buffer.from(a), y=Buffer.from(b); return x.length===y.length && crypto.timingSafeEqual(x,y); }
-function token(req){ return String(req.headers.authorization ?? "").replace(/^Bearer\\s+/i,"").trim(); }
+function token(req){ return String(req.headers.authorization ?? "").replace(/^Bearer\s+/i,"").trim(); }
 
 function verify(raw, scope) {
   if(!MCP_SECRET) return null;
@@ -23,7 +23,7 @@ function verify(raw, scope) {
   } catch { return null; }
   const sig=b64(crypto.createHmac("sha256",MCP_SECRET).update(`${p[0]}.${p[1]}`).digest());
   const now=Math.floor(Date.now()/1000);
-  const scopes=String(c.scope??"").split(/\\s+/).filter(Boolean);
+  const scopes=String(c.scope??"").split(/\s+/).filter(Boolean);
   if(h?.alg!=="HS256" || h?.typ!=="JWT" || !equal(sig,p[2]) || c.iss!==OAUTH_ISSUER || c.aud!==RESOURCE_URL || !c.sub || c.exp<=now || c.iat>now+120) return null;
   if(scope && !scopes.includes(scope)) return null;
   return {...c,__token:raw};
@@ -118,7 +118,7 @@ function serverFor(claims){
     annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false}
   },async({domain,action,args})=>{
     if(!verify(claims.__token??"","aura.execute")) return {isError:true,content:[{type:"text",text:"aura.execute scope is required."}]};
-    return textResult(await local("/api/action",{method:"POST",headers:{"content-type":"application/json","authorization:`Bearer ${claims.__token}`},body:JSON.stringify({domain,action,args})}));
+    return textResult(await local("/api/action",{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${claims.__token}`},body:JSON.stringify({domain,action,args})}));
   });
 
   return server;

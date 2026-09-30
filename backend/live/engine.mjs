@@ -98,11 +98,12 @@ export class AuroraLiveSession {
     if (!this.closed) this.send({ type, sessionId: this.sessionId, timestamp: now(), ...payload });
   }
 
-  async configure({ model, language } = {}) {
+  async configure({ model, language, voice } = {}) {
     if (model) this.model = String(model);
     this.language = language || this.language || 'pt-BR';
+    if (voice) this.voice = String(voice);
     if (this.realtimeAdapterFactory && !this.realtimeAdapter) {
-      this.realtimeAdapter = this.realtimeAdapterFactory({ model: this.model, language: this.language });
+      this.realtimeAdapter = this.realtimeAdapterFactory({ model: this.model, language: this.language, voice: this.voice });
       this.wireRealtimeAdapter(this.realtimeAdapter);
       if (this.transcriberFactory && !this.transcriber) {
         this.transcriber = this.transcriberFactory({ language: this.language });

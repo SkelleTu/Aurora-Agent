@@ -169,7 +169,7 @@ const server = http.createServer(async (req, res) => {
       ok: true, agent: 'aurora', version: '0.9.0', provider: provider.name, model: provider.model,
       configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),
       auraBridge: { configured: auraBridge.configured },
-      live: { configured: LIVE_PROVIDER === 'openai' ? Boolean(OPENAI_API_KEY) : LIVE_PROVIDER === 'gemini' ? Boolean(GOOGLE_API_KEY) : Boolean(HF_TOKEN), provider: LIVE_PROVIDER, transport: 'websocket', vad: LIVE_PROVIDER === 'openai' || LIVE_PROVIDER === 'gemini' ? 'provider_realtime' : 'client_energy', model: LIVE_PROVIDER === 'openai' ? OPENAI_LIVE_MODEL : LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, nativeAudio: LIVE_PROVIDER === 'openai' || LIVE_PROVIDER === 'gemini', language: LIVE_LANGUAGE, voice: LIVE_PROVIDER === 'openai' ? OPENAI_LIVE_VOICE : null },
+      live: { availableVoices: ['cedar', 'marin'], configured: LIVE_PROVIDER === 'openai' ? Boolean(OPENAI_API_KEY) : LIVE_PROVIDER === 'gemini' ? Boolean(GOOGLE_API_KEY) : Boolean(HF_TOKEN), provider: LIVE_PROVIDER, transport: 'websocket', vad: LIVE_PROVIDER === 'openai' || LIVE_PROVIDER === 'gemini' ? 'provider_realtime' : 'client_energy', model: LIVE_PROVIDER === 'openai' ? OPENAI_LIVE_MODEL : LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model, nativeAudio: LIVE_PROVIDER === 'openai' || LIVE_PROVIDER === 'gemini', language: LIVE_LANGUAGE, voice: LIVE_PROVIDER === 'openai' ? OPENAI_LIVE_VOICE : null },
       architecture: { reasoning: 'huggingface', capabilities: 'huggingface-adapters', voice: 'huggingface', tools: 'aura-system-bridge' },
       voiceModels: { stt: HF_STT_MODEL, tts: HF_TTS_MODEL }, modelProfiles: AURORA_MODEL_PROFILES, capabilities: Object.keys(HUGGING_FACE_TASKS),
     });
@@ -227,7 +227,7 @@ liveWss.on('connection', (socket) => {
   const sessionId = crypto.randomUUID();
   recordLiveTelemetry('LIVE_CONNECT', sessionId, { provider: LIVE_PROVIDER, model: LIVE_PROVIDER === 'openai' ? OPENAI_LIVE_MODEL : LIVE_PROVIDER === 'gemini' ? GEMINI_LIVE_MODEL : provider.model });
   const liveAdapterFactory = LIVE_PROVIDER === 'openai'
-    ? ({ model, language }) => new OpenAILiveAdapter({ apiKey: OPENAI_API_KEY, model: model || OPENAI_LIVE_MODEL, language, voice: OPENAI_LIVE_VOICE, auraBridge, sessionId })
+    ? ({ model, language, voice }) => new OpenAILiveAdapter({ apiKey: OPENAI_API_KEY, model: model || OPENAI_LIVE_MODEL, language, voice: voice || OPENAI_LIVE_VOICE, auraBridge, sessionId })
     : LIVE_PROVIDER === 'gemini'
       ? ({ model, language }) => new GeminiLiveAdapter({ apiKey: GOOGLE_API_KEY, model: model || GEMINI_LIVE_MODEL, language, auraBridge, sessionId })
       : null;

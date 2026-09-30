@@ -12,6 +12,7 @@ import { createAIProvider } from './providers/index.mjs';
 import { createAuroraCore } from './agent/core.mjs';
 import { HUGGING_FACE_TASKS, AURORA_MODEL_PROFILES, listAuroraCapabilities } from './providers/huggingface-capabilities.mjs';
 import { createAuraBridge } from './aurora/bridge.mjs';
+import { handleAuroraMcp } from './aurora/mcp.mjs';
 
 const port = Number(process.env.PORT || process.env.AURORA_PORT || 8787);
 const webRoot = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -165,6 +166,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const requestUrl = new URL(req.url, 'http://localhost');
+    if (requestUrl.pathname === '/mcp' || requestUrl.pathname === '/.well-known/oauth-protected-resource') {
+      const handled = await handleAuroraMcp(req, res);
+      if (handled) return;
+    }
     if (req.method === 'GET' && requestUrl.pathname === '/health') return json(res, 200, {
       ok: true, agent: 'aurora', version: '0.9.0', provider: provider.name, model: provider.model,
       configured: provider.configured ?? true, voice: Boolean(HF_TOKEN), web: existsSync(join(webRoot, 'index.html')),

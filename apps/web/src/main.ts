@@ -296,15 +296,23 @@ document.querySelector<HTMLSelectElement>('#expression')!.addEventListener('chan
 document.querySelector<HTMLSelectElement>('#outfit')!.addEventListener('change', (e) => runAvatarAction('setOutfit', { outfit: (e.target as HTMLSelectElement).value }));
 document.querySelector<HTMLButtonElement>('#menu')!.addEventListener('click', () => document.querySelector('.control-panel')!.classList.toggle('expanded'));
 document.querySelector<HTMLButtonElement>('#refresh')!.addEventListener('click', health); document.querySelector<HTMLButtonElement>('#refreshTop')!.addEventListener('click', health);
-document.querySelector<HTMLButtonElement>('#testVoice')!.addEventListener('click', () => speak('Olá! Eu sou a Aurora. A voz está pronta para teste.'));
+document.querySelector<HTMLButtonElement>('#testVoice')!.addEventListener('click', () => { void testSelectedLiveVoice(); });
 autoSpeak.addEventListener('change', () => { status.textContent = autoSpeak.checked ? 'Voz automática ativada.' : 'Voz automática desativada.'; });
-liveModel.addEventListener('change', () => { liveState.model = liveModel.value.trim(); status.textContent = `Modelo Live: ${liveState.model || 'padrão'}`; });
+liveModel.addEventListener('change', async () => {
+  liveState.model = liveModel.value.trim();
+  status.textContent = `Modelo Live: ${liveState.model || 'padrão'}`;
+  if (liveState.enabled || liveState.connecting) { await stopLiveVoice(); await startLiveVoice(); }
+});
 voiceSelect.addEventListener('change', async () => {
   liveState.voice = voiceSelect.value;
   status.textContent = `Voz OpenAI: ${voiceSelect.options[voiceSelect.selectedIndex]?.text || liveState.voice}`;
   if (liveState.enabled || liveState.connecting) { await stopLiveVoice(); await startLiveVoice(); }
 });
-language.addEventListener('change', () => { status.textContent = `Idioma: ${language.value}`; if (liveVoiceEnabled && liveRecognition) { liveRecognition.lang = language.value; } });
+language.addEventListener('change', async () => {
+  status.textContent = `Idioma: ${language.value}`;
+  if (liveVoiceEnabled && liveRecognition) liveRecognition.lang = language.value;
+  if (liveState.enabled || liveState.connecting) { await stopLiveVoice(); await startLiveVoice(); }
+});
 form.addEventListener('submit', async (event) => { event.preventDefault(); const text = input.value; input.value = ''; try { await sendMessage(text); } catch (e) { addMessage('assistant', e instanceof Error ? e.message : 'Erro de comunicação.'); } });
 
 const liveState = {
@@ -336,6 +344,22 @@ const liveState = {
 function setLiveVoiceState(label: string) {
   voiceLiveState.textContent = label;
   mic.textContent = liveState.enabled ? '■  Encerrar conversa ao vivo' : '◉  Iniciar conversa ao vivo';
+}
+function testSelectedLiveVoice() {
+  if (!liveState.enabled || liveState.socket?.readyState !== WebSocket.OPEN) {
+    status.textContent = 'Inicie a conversa ao vivo para testar a voz selecionada.';
+    void startLiveVoice();
+    return;
+  }
+  clearEmpty();
+  upsertLiveMessage('user', 'live-voice-test', 'Teste de voz selecionada.', false);
+  finalizeLiveMessage('live-voice-test');
+  liveSend({
+    type:'conversation.item.create',
+    item:{ type:'message', role:'user', content:[{ type:'input_text', text:'Responda apenas com uma frase curta em português do Brasil para testar a voz selecionada.' }] }
+  });
+  liveSend({ type:'response.create', response:{ output_modalities:['audio'] } });
+  status.textContent = `Testando voz OpenAI: ${liveState.voice}.`;
 }
 
 function liveSend(event: Record<string, unknown>) {
@@ -441,6 +465,10 @@ function handleLiveEvent(event: any) {
       liveState.connecting = false;
       liveState.model = String(event.model || liveState.model || '');
       modelCompact.textContent = liveState.model || modelCompact.textContent;
+      if (event.voice && Array.from(voiceSelect.options).some((option) => option.value === event.voice)) {
+        voiceSelect.value = String(event.voice);
+        liveState.voice = String(event.voice);
+      }
       setLiveVoiceState('● Ouvindo em tempo real…');
       status.textContent = 'Aurora Live conectada.';
       break;
@@ -624,11 +652,11 @@ async function startLiveVoice() {
     liveState.source = source;
     const processPcm = (pcmBuffer: ArrayBuffer, rms: number) => {
       if (!liveState.enabled || liveState.socket?.readyState !== WebSocket.OPEN) return;
-      if (liveState.noiseSamples < 25) {
+      if (!liveState.speaking && liveState.noiseSamples < 12 && rms < 0.035) {
         liveState.noiseFloor=(liveState.noiseFloor*liveState.noiseSamples+rms)/(liveState.noiseSamples+1);
         liveState.noiseSamples += 1;
       }
-      const threshold=Math.max(0.014,liveState.noiseFloor*2.8);
+      const threshold=Math.max(0.012, Math.min(0.045, liveState.noiseFloor*2.2));
       if (rms >= threshold) {
         liveState.silenceSince=0;
         if (!liveState.speaking) {

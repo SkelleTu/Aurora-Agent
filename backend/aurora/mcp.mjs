@@ -8,17 +8,15 @@ const OAUTH_ISSUER = String(process.env.MCP_OAUTH_ISSUER ?? "https://integrated-
 const MCP_SECRET = String(process.env.MCP_OAUTH_SECRET ?? "");
 const PORT = String(process.env.PORT ?? process.env.AURORA_PORT ?? "8787");
 
-type Claims = { iss:string; aud:string; sub:string; username?:string; scope?:string; iat:number; exp:number; __token?:string };
-
-function b64(value:string|Buffer){ return Buffer.from(value).toString("base64url"); }
-function equal(a:string,b:string){ const x=Buffer.from(a), y=Buffer.from(b); return x.length===y.length && crypto.timingSafeEqual(x,y); }
+function b64(value){ return Buffer.from(value).toString("base64url"); }
+function equal(a,b){ const x=Buffer.from(a), y=Buffer.from(b); return x.length===y.length && crypto.timingSafeEqual(x,y); }
 function token(req){ return String(req.headers.authorization ?? "").replace(/^Bearer\\s+/i,"").trim(); }
 
-function verify(raw:string, scope?:string):Claims|null {
+function verify(raw, scope) {
   if(!MCP_SECRET) return null;
   const p=raw.split(".");
   if(p.length!==3) return null;
-  let h:any, c:Claims;
+  let h, c:Claims;
   try {
     h=JSON.parse(Buffer.from(p[0],"base64url").toString());
     c=JSON.parse(Buffer.from(p[1],"base64url").toString());
@@ -42,27 +40,27 @@ function auth(req,res,scope="aura.read"){
 }
 
 async function readJson(req){
-  const chunks:Buffer[]=[];
-  for await(const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));
+  const chunks[]=[];
+  for await(const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk.from(chunk));
   if(!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function local(path:string, options:RequestInit={}){
+async function local(path, options={}){
   const response=await fetch(`http://127.0.0.1:${PORT}${path}`,{
     ...options,
     headers:{Accept:"application/json",...(options.headers??{})},
     signal:options.signal??AbortSignal.timeout(30000)
   });
   const text=await response.text();
-  let result:any=null;
+  let result=null;
   try{ result=text?JSON.parse(text):null; }catch{ result={raw:text}; }
   return {ok:response.ok,status:response.status,result};
 }
 
-function textResult(value:unknown){ return {content:[{type:"text" as const,text:JSON.stringify(value)}],structuredContent:value}; }
+function textResult(value){ return {content:[{type:"text",text:JSON.stringify(value)}],structuredContent:value}; }
 
-function serverFor(claims:Claims){
+function serverFor(claims){
   const server=new McpServer(
     {name:"aurora-agent-direct",version:"1.0.0"},
     {instructions:"Direct ChatGPT control surface for Aurora Agent. Read diagnostics before execution. Mutating tools require aura.execute."}

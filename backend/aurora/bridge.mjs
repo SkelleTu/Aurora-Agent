@@ -17,7 +17,7 @@ function operatorMode(value) {
 export function createAuraBridge(config = {}) {
   const baseUrl = config.baseUrl ?? process.env.AURA_SYSTEM_URL ?? '';
   const gatewayUrl = config.gatewayUrl ?? process.env.UNIVERSAL_SERVER_URL ?? '';
-  const token = config.token ?? process.env.AURA_SYSTEM_TOKEN ?? process.env.AURA_AGENT_TOKEN ?? '';
+  const token = config.token ?? process.env.AURA_SYSTEM_TOKEN ?? process.env.AURORA_OPERATOR_TOKEN ?? process.env.AURA_AGENT_TOKEN ?? '';
   const timeoutMs = Number(config.timeoutMs ?? process.env.AURA_SYSTEM_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
   const mode = operatorMode(config.operatorMode);
 

@@ -8,7 +8,7 @@ root.innerHTML = `
       <canvas id="canvas" aria-label="Aurora 3D stage"></canvas>
       <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
       <header class="topbar glass">
-        <div class="brand"><img class="brand-mark" src="/branding/aurora-agent-logo.png" alt="Aurora Agent"/><div><strong>AURORA</strong><span>AGENT SYSTEM</span></div></div>
+        <div class="brand"><img class="brand-mark" src="/icons/aurora.svg?v=4" alt="Aurora Agent"/><div><strong>AURORA</strong><span>AGENT SYSTEM</span></div></div>
         <div class="top-status"><span class="pulse"></span><span id="topConnection">Conectando</span><button id="refreshTop" class="ghost" aria-label="Atualizar estado">↻</button></div>
       </header>
       <div class="hero">

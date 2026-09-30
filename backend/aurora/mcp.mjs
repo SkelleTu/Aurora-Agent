@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -13,7 +12,7 @@ type Claims = { iss:string; aud:string; sub:string; username?:string; scope?:str
 
 function b64(value:string|Buffer){ return Buffer.from(value).toString("base64url"); }
 function equal(a:string,b:string){ const x=Buffer.from(a), y=Buffer.from(b); return x.length===y.length && crypto.timingSafeEqual(x,y); }
-function token(req:IncomingMessage){ return String(req.headers.authorization ?? "").replace(/^Bearer\\s+/i,"").trim(); }
+function token(req){ return String(req.headers.authorization ?? "").replace(/^Bearer\\s+/i,"").trim(); }
 
 function verify(raw:string, scope?:string):Claims|null {
   if(!MCP_SECRET) return null;
@@ -32,17 +31,17 @@ function verify(raw:string, scope?:string):Claims|null {
   return {...c,__token:raw};
 }
 
-function challenge(res:ServerResponse, scope="aura.read"){
+function challenge(res, scope="aura.read"){
   res.setHeader("WWW-Authenticate",`Bearer resource_metadata="${RESOURCE_URL}/.well-known/oauth-protected-resource", scope="${scope}"`);
 }
 
-function auth(req:IncomingMessage,res:ServerResponse,scope="aura.read"){
+function auth(req,res,scope="aura.read"){
   const claims=verify(token(req),scope);
   if(!claims){ challenge(res,scope); res.statusCode=401; res.setHeader("content-type","application/json"); res.end(JSON.stringify({error:"unauthorized",error_description:"A valid OAuth access token is required."})); return null; }
   return claims;
 }
 
-async function readJson(req:IncomingMessage){
+async function readJson(req){
   const chunks:Buffer[]=[];
   for await(const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));
   if(!chunks.length) return {};
@@ -127,7 +126,7 @@ function serverFor(claims:Claims){
   return server;
 }
 
-export async function handleAuroraMcp(req:IncomingMessage,res:ServerResponse){
+export async function handleAuroraMcp(req,res){
   const url=new URL(req.url ?? "/", "http://localhost");
   if(req.method==="GET" && url.pathname==="/.well-known/oauth-protected-resource"){
     res.writeHead(200,{"content-type":"application/json","cache-control":"no-store"});

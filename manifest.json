@@ -1,9 +1,15 @@
 {
-  "name":"Aurora Agent","short_name":"Aurora","description":"Aurora Agent, agente operacional com voz e presença 3D.",
-  "start_url":"/","scope":"/","display":"standalone","orientation":"any",
-  "background_color":"#080a10","theme_color":"#080a10",
+  "name":"Aurora Agent",
+  "short_name":"Aurora",
+  "description":"Aurora Agent, agente operacional com voz e presença 3D.",
+  "start_url":"/",
+  "scope":"/",
+  "display":"standalone",
+  "orientation":"any",
+  "background_color":"#080a10",
+  "theme_color":"#080a10",
   "icons":[
-    {"src":"/icons/aurora-192.webp","sizes":"192x192","type":"image/webp","purpose":"any"},
-    {"src":"/icons/aurora-192.webp","sizes":"192x192","type":"image/webp","purpose":"maskable"}
+    {"src":"/icons/aurora-192.webp?v=2","sizes":"192x192","type":"image/webp","purpose":"any"},
+    {"src":"/icons/aurora-192.webp?v=2","sizes":"192x192","type":"image/webp","purpose":"maskable"}
   ]
 }

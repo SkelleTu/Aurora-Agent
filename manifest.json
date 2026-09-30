@@ -1,3 +1,20 @@
 {
-  "name":"Aurora Agent","short_name":"Aurora","description":"Aurora Agent, agente operacional com voz e presença 3D.","start_url":"/","scope":"/","display":"standalone","orientation":"any","background_color":"#080a10","theme_color":"#080a10","icons":[{"src":"/icons/aurora-192.png","sizes":"1024x1024","type":"image/png","purpose":"any"},{"src":"/icons/aurora-512.png","sizes":"1024x1024","type":"image/png","purpose":"maskable"}]
+  "id": "/",
+  "name": "Aurora Agent",
+  "short_name": "Aurora",
+  "description": "Aurora Agent, agente operacional com voz e presença 3D.",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#080a10",
+  "theme_color": "#080a10",
+  "prefer_related_applications": false,
+  "icons": [
+    {"src": "/icons/aurora-192.png?v=2", "sizes": "1024x1024", "type": "image/png", "purpose": "any"},
+    {"src": "/icons/aurora-512.png?v=2", "sizes": "1024x1024", "type": "image/png", "purpose": "maskable"}
+  ]
 }

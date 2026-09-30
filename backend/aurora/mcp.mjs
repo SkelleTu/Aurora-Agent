@@ -127,26 +127,37 @@ function serverFor(claims:Claims){
   return server;
 }
 
-export function registerAuroraMcp(server:any){
-  server.get("/.well-known/oauth-protected-resource",(req:any,res:any)=>{
-    res.json({resource:RESOURCE_URL,authorization_servers:[OAUTH_ISSUER],scopes_supported:["aura.read","aura.execute"],bearer_methods_supported:["header"],resource_documentation:RESOURCE_URL+"/mcp"});
-  });
-
-  server.all("/mcp",async(req:any,res:any)=>{
-    if(req.method==="OPTIONS"){res.status(204).end();return;}
-    if(req.method!=="POST"){res.setHeader("Allow","POST, OPTIONS");res.status(405).json({error:"method_not_allowed"});return;}
-    const claims=auth(req,res,"aura.read");
-    if(!claims)return;
-    try{
-      const body=await readJson(req);
-      const mcp=serverFor(claims);
-      const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined,enableJsonResponse:true});
-      await mcp.connect(transport);
-      await transport.handleRequest(req,res,body);
-      await transport.close();
-      await mcp.close();
-    }catch(error){
-      if(!res.headersSent)res.status(500).json({error:"mcp_request_failed",message:error instanceof Error?error.message:"MCP request failed"});
+export async function handleAuroraMcp(req:IncomingMessage,res:ServerResponse){
+  const url=new URL(req.url ?? "/", "http://localhost");
+  if(req.method==="GET" && url.pathname==="/.well-known/oauth-protected-resource"){
+    res.writeHead(200,{"content-type":"application/json","cache-control":"no-store"});
+    res.end(JSON.stringify({
+      resource:RESOURCE_URL,
+      authorization_servers:[OAUTH_ISSUER],
+      scopes_supported:["aura.read","aura.execute"],
+      bearer_methods_supported:["header"],
+      resource_documentation:RESOURCE_URL+"/mcp"
+    }));
+    return true;
+  }
+  if(url.pathname!=="/mcp") return false;
+  if(req.method==="OPTIONS"){res.writeHead(204);res.end();return true;}
+  if(req.method!=="POST"){res.writeHead(405,{"allow":"POST, OPTIONS","content-type":"application/json"});res.end(JSON.stringify({error:"method_not_allowed"}));return true;}
+  const claims=auth(req,res,"aura.read");
+  if(!claims)return true;
+  try{
+    const body=await readJson(req);
+    const mcp=serverFor(claims);
+    const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined,enableJsonResponse:true});
+    await mcp.connect(transport);
+    await transport.handleRequest(req,res,body);
+    await transport.close();
+    await mcp.close();
+  }catch(error){
+    if(!res.headersSent){
+      res.writeHead(500,{"content-type":"application/json"});
+      res.end(JSON.stringify({error:"mcp_request_failed",message:error instanceof Error?error.message:"MCP request failed"}));
     }
-  });
+  }
+  return true;
 }

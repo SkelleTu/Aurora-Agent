@@ -1,33 +1,4 @@
 /* Aurora Agent brand layer */
-.brand-mark {
-  display: block !important;
-  width: 46px !important;
-  height: 46px !important;
-  object-fit: contain !important;
-  background: none !important;
-  font-size: 0 !important;
-  filter: drop-shadow(0 0 14px rgba(123,92,255,.28));
-}
-.hero::after {
-  content: "";
-  position: absolute;
-  width: 190px;
-  height: 190px;
-  right: -18px;
-  top: -58px;
-  background: url("/branding/aurora-agent-logo.png") center / contain no-repeat;
-  opacity: .075;
-  filter: drop-shadow(0 0 34px rgba(0,217,255,.25));
-  pointer-events: none;
-}
-.control-panel::after {
-  content: "";
-  position: absolute;
-  right: 18px;
-  bottom: 42px;
-  width: 90px;
-  height: 90px;
-  background: url("/branding/aurora-agent-logo.png") center / contain no-repeat;
-  opacity: .035;
-  pointer-events: none;
-}
+.brand-mark{display:block!important;width:46px!important;height:46px!important;object-fit:contain!important;background:none!important;font-size:0!important;filter:drop-shadow(0 0 14px rgba(123,92,255,.28));}
+.hero::after{content:"";position:absolute;width:190px;height:190px;right:-18px;top:-58px;background:url("/branding/aurora-agent-logo.png") center/contain no-repeat;opacity:.075;filter:drop-shadow(0 0 34px rgba(0,217,255,.25));pointer-events:none;}
+.control-panel::after{content:"";position:absolute;right:18px;bottom:42px;width:90px;height:90px;background:url("/branding/aurora-agent-logo.png") center/contain no-repeat;opacity:.035;pointer-events:none;}

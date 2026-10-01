@@ -211,8 +211,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ...result, events: [{ type: 'agent.message', timestamp: new Date().toISOString(), payload: { text: result.message } }, ...result.actions.map((action) => ({ type: 'agent.action', timestamp: new Date().toISOString(), payload: action }))] });
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/action') {
-      const body = await readJson(req); if (!body.domain || !body.action) return json(res, 400, { ok: false, error: 'domain_and_action_required' });
-      const result = await auraBridge.dispatch({ domain: String(body.domain), action: String(body.action), args: body.args && typeof body.args === 'object' ? body.args : {}, signal: req.signal });
+      const body = await readJson(req); if (!body.target || !body.domain || !body.action) return json(res, 400, { ok: false, error: 'target_domain_and_action_required' });
+      const result = await auraBridge.dispatch({ target: String(body.target), domain: String(body.domain), action: String(body.action), args: body.args && typeof body.args === 'object' ? body.args : {}, signal: req.signal });
       return json(res, result.ok ? 200 : 503, result);
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/transcribe') return json(res, 200, await transcribe(req));

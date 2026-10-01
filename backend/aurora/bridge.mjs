@@ -72,11 +72,12 @@ export function createAuraBridge(config = {}) {
     }
   }
 
-  async function dispatch({ domain, action, args = {}, traceId, requestId, signal, target = 'gateway' } = {}) {
+  async function dispatch({ target = 'aura', domain, action, args = {}, traceId, requestId, signal } = {}) {
     if (!domain || !action) return { ok: false, dispatched: false, reason: 'domain and action are required.' };
     const resolvedTraceId = id(traceId);
     const resolvedRequestId = id(requestId);
     const supremeRequest = {
+      target,
       domain,
       action,
       args,
@@ -84,7 +85,7 @@ export function createAuraBridge(config = {}) {
       traceId: resolvedTraceId,
       requestId: resolvedRequestId,
     };
-    const useGateway = target !== 'aura' && Boolean(gatewayUrl);
+    const useGateway = Boolean(gatewayUrl);
     const result = await request('/api/agent/action', {
       method: 'POST',
       body: supremeRequest,
@@ -102,7 +103,7 @@ export function createAuraBridge(config = {}) {
       traceId: result.traceId,
       requestId: result.requestId,
       operatorMode: mode,
-      target: useGateway ? 'universal' : 'aura',
+      target,
       reason: result.reason,
       result: result.result,
     };

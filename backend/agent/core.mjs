@@ -16,11 +16,12 @@ const AURORA_TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          domain: { type: 'string', enum: ['avatar', 'scene', 'memory', 'voice', 'animation', 'clothing', 'media', 'project', 'game', 'automation', 'settings', 'integration', 'integratesystem', 'interface', 'system'] },
-          action: { type: 'string' },
+          target: { type: 'string', description: 'Destination platform/system identifier, for example aura or another registered integration target.' },
+          domain: { type: 'string', description: 'Destination-specific operation domain.' },
+          action: { type: 'string', description: 'Destination-specific operation name.' },
           args: { type: 'object', additionalProperties: true },
         },
-        required: ['domain', 'action', 'args'],
+        required: ['target', 'domain', 'action', 'args'],
         additionalProperties: false,
       },
     },
@@ -83,16 +84,16 @@ export function createAuroraCore({ provider, auraBridge = null }) {
       return { role: 'tool', tool_call_id: call?.id, content: JSON.stringify({ ok: false, error: 'invalid_tool_arguments' }) };
     }
 
-    if (name === 'aura_action' && input.domain && input.action && typeof input.args === 'object') {
+    if (name === 'aura_action' && input.target && input.domain && input.action && typeof input.args === 'object') {
       try {
         const result = auraBridge
-          ? await auraBridge.dispatch({ domain: input.domain, action: input.action, args: input.args, signal })
+          ? await auraBridge.dispatch({ target: input.target, domain: input.domain, action: input.action, args: input.args, signal })
           : { ok: false, dispatched: false, reason: 'Aura bridge is not configured.' };
         return {
           role: 'tool',
           tool_call_id: call.id,
           content: JSON.stringify(result),
-          action: { id: randomUUID(), domain: input.domain, action: input.action, args: input.args, result: summarizeToolResult(result) },
+          action: { id: randomUUID(), target: input.target, domain: input.domain, action: input.action, args: input.args, result: summarizeToolResult(result) },
         };
       } catch (error) {
         return {

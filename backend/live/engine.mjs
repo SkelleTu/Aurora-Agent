@@ -273,9 +273,9 @@ export class AuroraLiveSession {
     let args = {};
     try { args = JSON.parse(call.function?.arguments || '{}'); } catch {}
     if (call.function?.name !== 'aura_action') return { message: { role:'tool', tool_call_id:id, content:safeJson({ok:false,error:'unknown_tool'}) } };
-    const { domain, action } = args;
+    const { target, domain, action } = args;
     const result = this.auraBridge
-      ? await this.auraBridge.dispatch({ domain: String(domain || ''), action: String(action || ''), args: args.args && typeof args.args === 'object' ? args.args : {}, signal })
+      ? await this.auraBridge.dispatch({ target: String(target || 'aura'), domain: String(domain || ''), action: String(action || ''), args: args.args && typeof args.args === 'object' ? args.args : {}, signal })
       : { ok:false, dispatched:false, reason:'Aura bridge is not configured.' };
     this.emit('tool.completed', { callId:id, name:'aura_action', result });
     return { message: { role:'tool', tool_call_id:id, content:safeJson(result) } };
